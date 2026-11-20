@@ -9,6 +9,7 @@
 // }
 //
 // A group with `manual: true` was named by the user; classifier renames skip it.
+// One with `manualLabel: true` had its label set by the user; renames keep it.
 
 import { MAX_DEPTH, chain, childMap } from './model.js';
 
@@ -122,7 +123,7 @@ export function applyPlan(groups, counters, plan, validTabIds) {
     const name = clean(r.name, 40);
     if (name) g.name = name;
     const label = clean(r.label, 14);
-    if (label) g.label = label;
+    if (label && !g.manualLabel) g.label = label;
   }
 
   const assign = {};

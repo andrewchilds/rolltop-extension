@@ -96,6 +96,8 @@ function pinSlot() {
 function groupNode(r) {
   const fixed = r.id === UNGROUPED;
   const renaming = editing === r.id;
+  const tagging = editingLabel === r.id;
+  const busy = renaming || tagging;
   const pin =actBtn('pinGroup', r.pinLabel, { group: r.id }, icon('pin', { filled: r.hard }), { 'aria-pressed': String(r.hard) });
   if (r.kept) pin.classList.add('on');
   // Only the arrow opens and closes the group; the rest of the row is left
@@ -103,7 +105,7 @@ function groupNode(r) {
   // does not start a drag from inside one. Inert while renaming.
   const twist = fixed ? null : el('span', {
     class: 'twist',
-    ...(renaming ? {} : {
+    ...(busy ? {} : {
       role: 'button', tabindex: '0',
       'aria-label': `${r.open ? 'Collapse' : 'Expand'} ${r.name}`, 'aria-expanded': String(r.open),
       data: { act: 'toggleGroup', group: r.id },
@@ -113,15 +115,21 @@ function groupNode(r) {
     twist,
     el('span', { class: 'dot', 'aria-hidden': 'true' }),
     renaming ? renameInput(r.name, 'Group name', 40) : el('span', { class: 'gname' }, r.name),
-    el('span', { class: 'chip' }, r.label),
+    // Clicking a group's tag edits it, for that group alone.
+    tagging ? tagInput(r.label)
+      : fixed ? el('span', { class: 'chip' }, r.label)
+        : el('span', {
+          class: 'chip edit', role: 'button', tabindex: '0', title: 'Edit tag',
+          'aria-label': `Tag: ${r.label}. Edit`, data: { act: 'editLabel', group: r.id },
+        }, r.label),
   ];
   return el('div', {
-    class: `row group ${hueClass(r.hue)}${r.open ? ' open' : ''}${r.top ? ' top' : ''}${fixed ? ' static' : ''}${renaming ? ' editing' : ''}`,
-    style: `${hueStyle(r.hue)}padding-left:${r.depth * 14}px;opacity:${renaming ? 1 : r.fade}`,
+    class: `row group ${hueClass(r.hue)}${r.open ? ' open' : ''}${r.top ? ' top' : ''}${fixed ? ' static' : ''}${busy ? ' editing' : ''}`,
+    style: `${hueStyle(r.hue)}padding-left:${r.depth * 14}px;opacity:${busy ? 1 : r.fade}`,
     data: fixed ? {} : { ctxGroup: r.id },
-    draggable: fixed || renaming ? null : 'true',
+    draggable: fixed || busy ? null : 'true',
   },
-    el('div', { class: 'row-main', title: renaming ? null : r.name }, ...parts),
+    el('div', { class: 'row-main', title: busy ? null : r.name }, ...parts),
     el('div', { class: 'acts' },
       fixed ? null : pin,
       fixed ? null : actBtn('archiveGroup', 'Close group', { group: r.id }, icon('close')),
@@ -193,6 +201,7 @@ let query = '';
 let hits = { query: '', tabs: [] }; // archived tabs matching a query, from the background
 let editing = null; // id of the group being renamed in its row
 let editingTab = null; // id of the tab being renamed in its row or pinned tile
+let editingLabel = null; // id of the group whose tag is being edited in its row
 let menuTarget = null; // what this sidebar's open context menu was opened on
 let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
 let marked = null; // the drop target currently highlighted
@@ -210,16 +219,121 @@ function renameInput(value, label, maxlength) {
   return input;
 }
 
+// ---- tag editing -------------------------------------------------------------
+// A group's tag is edited in a field with a menu of the tags already in use.
+// Picking one reuses it; anything else typed becomes a new tag.
+
+const TAG_MAX = 14; // the background trims tags to this
+let tagMenu = null; // the menu element, made on first use
+let tagField = null; // the field the menu is open for
+
+// Tags in use, most used first.
+function tagsInUse() {
+  const counts = new Map();
+  for (const g of Object.values(snap.groups)) counts.set(g.label, (counts.get(g.label) || 0) + 1);
+  return [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
+}
+
+// The tag already in use that `text` spells, whatever its case.
+const tagNamed = (text) => tagsInUse().find((t) => t.toLowerCase() === text.toLowerCase());
+
+function tagInput(value) {
+  const input = renameInput(value, 'Group tag', TAG_MAX);
+  input.classList.add('chip-edit');
+  Object.entries({
+    role: 'combobox', 'aria-autocomplete': 'list', 'aria-controls': 'tag-menu', 'aria-expanded': 'false',
+  }).forEach(([key, v]) => input.setAttribute(key, v));
+  input.addEventListener('input', () => showTagMenu(input, input.value.trim()));
+  // The arrows put a tag in the field; Enter then commits it like any rename.
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    if (!tagMenu || tagMenu.hidden) {
+      showTagMenu(input, '');
+      return;
+    }
+    const options = [...tagMenu.children];
+    const at = options.findIndex((o) => o.getAttribute('aria-selected') === 'true');
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    const next = options[at < 0 ? (step > 0 ? 0 : options.length - 1) : (at + step + options.length) % options.length];
+    options.forEach((o) => o.setAttribute('aria-selected', String(o === next)));
+    input.setAttribute('aria-activedescendant', next.id);
+    input.value = next.dataset.tag;
+    next.scrollIntoView({ block: 'nearest' });
+  });
+  return input;
+}
+
+// Lists the tags matching what was typed (all of them when nothing was), then
+// the typed text itself when it would make a new tag.
+function showTagMenu(input, typed) {
+  if (!tagMenu) {
+    tagMenu = el('div', { id: 'tag-menu', class: 'tag-menu', role: 'listbox', 'aria-label': 'Tags' });
+    // Keeps focus in the field, so the click lands before the blur commits.
+    tagMenu.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      const option = event.target.closest('[role="option"]');
+      if (!option || !tagField) return;
+      tagField.value = option.dataset.tag;
+      finishRename(tagField, true);
+    });
+    document.body.append(tagMenu);
+  }
+  const q = typed.toLowerCase();
+  const tags = tagsInUse().filter((t) => t.toLowerCase().includes(q))
+    .sort((a, b) => b.toLowerCase().startsWith(q) - a.toLowerCase().startsWith(q));
+  const option = (tag, i, ...children) =>
+    el('div', { id: 'tag-opt-' + i, role: 'option', 'aria-selected': 'false', data: { tag } }, ...children);
+  const options = tags.map((t, i) => option(t, i, t));
+  if (typed && !tagNamed(typed)) {
+    options.push(option(typed, options.length, el('span', { class: 'hint' }, 'New tag '), typed));
+  }
+  tagField = input;
+  tagMenu.replaceChildren(...options);
+  tagMenu.hidden = !options.length;
+  input.setAttribute('aria-expanded', String(options.length > 0));
+  input.removeAttribute('aria-activedescendant');
+  placeTagMenu();
+}
+
+// Under the field, or above it when there is no room below.
+function placeTagMenu() {
+  if (!tagMenu || tagMenu.hidden || !tagField) return;
+  const rect = tagField.getBoundingClientRect();
+  const { offsetWidth: width, offsetHeight: height } = tagMenu;
+  const below = rect.bottom + 4;
+  tagMenu.style.top = (below + height > innerHeight - 4 && rect.top - 4 - height >= 4 ? rect.top - 4 - height : below) + 'px';
+  tagMenu.style.left = Math.max(4, Math.min(rect.left, innerWidth - width - 4)) + 'px';
+}
+
+function hideTagMenu() {
+  if (tagMenu) tagMenu.hidden = true;
+  tagField = null;
+}
+
+$('list').addEventListener('scroll', placeTagMenu);
+addEventListener('resize', placeTagMenu);
+
 function finishRename(input, commit) {
-  if (editing == null && editingTab == null) return;
+  if (editing == null && editingTab == null && editingLabel == null) return;
   const groupId = editing;
   const tabId = editingTab;
+  const tagId = editingLabel;
   editing = null;
   editingTab = null;
+  editingLabel = null;
+  hideTagMenu();
   const name = input.value.trim();
   if (commit && name !== input.defaultValue) {
     // Shown at once; the next snapshot confirms it.
-    if (tabId != null) {
+    if (tagId != null) {
+      // Typing a tag that exists in another case means that tag.
+      const label = name && (tagNamed(name) || name);
+      if (label && snap.groups[tagId] && snap.groups[tagId].label !== label) {
+        snap.groups[tagId].label = label;
+        send('setGroupLabel', { groupId: tagId, label });
+      }
+    } else if (tabId != null) {
       const tab = snap.tabs.find((t) => t.id === tabId);
       if (tab) tab.name = name;
       send('renameTab', { tabId, name }); // an empty name restores the page's title
@@ -309,7 +423,7 @@ function render() {
     if (editingTab != null && !snap.tabs.some((t) => t.id === editingTab)) editingTab = null;
     // A drag keeps everything in place: its source has to stay in the document.
     // So does a rename in progress: rebuilding would drop what was typed.
-    const renaming = editing != null || editingTab != null;
+    const renaming = editing != null || editingTab != null || editingLabel != null;
     if (!drag && !(renaming && $('browse').querySelector('.rename'))) {
       $('pins').hidden = !view.pins.length;
       // Left alone when unchanged, like the list: a double-click's first click
@@ -319,7 +433,7 @@ function render() {
         pinsSig = pinSig;
         $('pins').replaceChildren(...view.pins.map(pinNode), view.pins.length % 2 ? pinSlot() : '');
       }
-      const sig = JSON.stringify([view.rows, editing, editingTab]);
+      const sig = JSON.stringify([view.rows, editing, editingTab, editingLabel]);
       if (sig !== listSig) {
         listSig = sig;
         renderList(view.rows);
@@ -329,6 +443,7 @@ function render() {
         window.focus();
         input.focus();
         input.select();
+        if (input.classList.contains('chip-edit')) showTagMenu(input, '');
       }
     }
   }
@@ -367,6 +482,12 @@ document.addEventListener('click', (event) => {
       send('toggleGroup', { groupId: group });
       break;
     case 'pinGroup': send('pinGroup', { groupId: group }); break;
+    case 'editLabel':
+      if (!snap.groups[group]) return;
+      editing = null;
+      editingTab = null;
+      editingLabel = group;
+      break;
     case 'archiveGroup': send('archiveGroup', { groupId: group }); break;
     case 'showGroup': clearSearch(); send('showGroup', { groupId: group }); break;
     case 'reopenGroup': clearSearch(); send('reopenGroup', { groupId: group }); break;
@@ -381,16 +502,19 @@ document.addEventListener('click', (event) => {
 
 // Double-clicking a group's row, a tab's row or a pinned tile renames it in
 // place. A group's arrow is left out: two quick clicks there toggle it twice.
+// So are its tag, which the first click already opened, and any open field.
 document.addEventListener('dblclick', (event) => {
-  if (!snap || !event.target.closest || event.target.closest('.twist')) return;
+  if (!snap || !event.target.closest || event.target.closest('.twist, .chip, input')) return;
   const main = event.target.closest('#list .row-main, #pins .pin-main');
   if (!main) return;
   const groupId = main.parentNode.dataset.ctxGroup;
   if (groupId && snap.groups[groupId]) {
     editing = groupId;
     editingTab = null;
+    editingLabel = null;
   } else if (main.dataset.tab) {
     editing = null;
+    editingLabel = null;
     editingTab = Number(main.dataset.tab);
   } else {
     return;
@@ -580,6 +704,7 @@ function connect() {
     } else if (msg.type === 'editGroup') {
       clearSearch();
       editingTab = null;
+      editingLabel = null;
       editing = msg.groupId; // its row may only arrive with the next snapshot
     } else {
       return;

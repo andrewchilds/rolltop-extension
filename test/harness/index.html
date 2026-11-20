@@ -10,7 +10,7 @@
   Renders the real sidebar against the mockup's sample data, outside Firefox's
   extension runtime. Serve the repo root (python3 -m http.server) and open
   /test/harness/ — add ?q=shopping to see search results, ?edit=trip for a
-  group's rename field, ?ctx=<selector> to right-click a row,
+  group's rename field, ?click=[data-key="g:trip"]%20.chip for its tag field, ?ctx=<selector> to right-click a row,
   ?drag=<selector>&over=<selector>&y=0.5&x=0.5 to drag one row over another (add
   &drop=1 to drop it). Messages sent to
   the background and browser.menus calls are logged in <html data-log>.
@@ -98,6 +98,17 @@ if (params.has('click')) {
     chevronTurning: document.getAnimations().filter((x) => x.effect.target.matches('.chev')).length });
   if (params.has('freeze')) {
     document.getAnimations().forEach((a) => { a.pause(); a.currentTime = Number(params.get('freeze')); });
+  }
+}
+// ?type=<text> types into the focused field; ?keys=ArrowDown,Enter presses keys there.
+if (params.has('type') || params.has('keys')) {
+  await new Promise((r) => setTimeout(r, 50));
+  if (params.has('type')) {
+    document.activeElement.value = params.get('type');
+    document.activeElement.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  for (const key of (params.get('keys') || '').split(',').filter(Boolean)) {
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   }
 }
 document.documentElement.dataset.log = JSON.stringify({ sent, menuCalls });

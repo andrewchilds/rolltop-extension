@@ -454,6 +454,14 @@ export function createBackground({
         g.manual = true;
         break;
       }
+      // One group's tag; other groups with the same tag keep theirs.
+      case 'setGroupLabel': {
+        const label = clean(msg.label, 14);
+        if (!g || !label) break;
+        g.label = label;
+        g.manualLabel = true;
+        break;
+      }
       // An empty name goes back to the page's own title.
       case 'renameTab':
         setName(msg.tabId, clean(msg.name, 80));

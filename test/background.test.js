@@ -331,6 +331,36 @@ test('a renamed group keeps its name when the AI tries to rename it', async () =
   assert.equal(browser._storage.groups.g1.manual, true);
 });
 
+test('a tag set by hand changes one group and survives an AI rename', async () => {
+  let rename = false;
+  const ai = async (req) => ({
+    newGroups: rename ? [] : [
+      { ref: 'a', name: 'Kyoto in spring', label: 'Trip', parent: null },
+      { ref: 'b', name: 'Lisbon in fall', label: 'Trip', parent: null },
+    ],
+    assignments: req.tabs.map((t, i) => ({ tabId: t.id, group: rename ? 'g1' : i ? 'b' : 'a' })),
+    renames: rename ? [{ groupId: 'g1', name: 'Kyoto trip', label: 'Travel' }] : [],
+  });
+  const { bg, browser } = await boot(
+    [{ id: 1, url: 'https://slowroutes.travel/kyoto' }, { id: 2, url: 'https://slowroutes.travel/lisbon' }],
+    { ai, stored: { settings: { apiKey: 'sk-test' } } },
+  );
+  await bg.handle({ type: 'setGroupLabel', groupId: 'g1', label: '  Spring   holiday in Japan ' });
+  assert.equal(bg.state.groups.g1.label, 'Spring holiday');
+  assert.equal(bg.state.groups.g2.label, 'Trip');
+  await bg.handle({ type: 'setGroupLabel', groupId: 'g1', label: '   ' });
+  assert.equal(bg.state.groups.g1.label, 'Spring holiday');
+
+  rename = true;
+  await browser.tabs.create({ url: 'https://skycast.net/kyoto' });
+  await tick();
+  await bg.runClassify();
+  assert.equal(bg.state.groups.g1.name, 'Kyoto trip');
+  assert.equal(bg.state.groups.g1.label, 'Spring holiday');
+  await tick();
+  assert.equal(browser._storage.groups.g1.manualLabel, true);
+});
+
 test('a manually moved tab stays put through navigation, re-sort and restart', async () => {
   const { bg, browser } = await boot([
     { id: 1, url: 'https://example.com/a' },
