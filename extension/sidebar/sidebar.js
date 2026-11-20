@@ -621,7 +621,7 @@ document.addEventListener('dragstart', (event) => {
   if (row.classList.contains('pin')) drag = { pinId: Number(row.dataset.ctxTab) };
   else drag = row.dataset.ctxTab ? { tabId: Number(row.dataset.ctxTab) } : { groupId: row.dataset.ctxGroup };
   event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('application/x-tidy-row', '1'); // Firefox needs some data to start a drag
+  event.dataTransfer.setData('application/x-rolltop-row', '1'); // Firefox needs some data to start a drag
   row.classList.add('dragging');
   // With nothing pinned there is no grid to drop on: show a blank cell for the
   // drag. Deferred, as changing the layout inside dragstart can cancel the drag.

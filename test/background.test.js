@@ -428,20 +428,20 @@ test('menu clicks on a tab row: archive, move to a group, move to a new group', 
   const other = bg.assign.get(2).groupId;
   assert.deepEqual(bg.moveTargets(1).map((t) => t.title), ['other.org', 'third.net']);
 
-  await bg.menuClick('tidy-move:' + other, 1);
+  await bg.menuClick('rolltop-move:' + other, 1);
   assert.equal(bg.assign.get(1).groupId, other);
   assert.deepEqual(bg.moveTargets(1).map((t) => t.title), ['third.net']);
 
   // The browser did not name the tab: fall back to the row the sidebar reported.
   port.send({ type: 'menuTarget', tabId: 3 });
-  await bg.menuClick('tidy-move-new');
+  await bg.menuClick('rolltop-move-new');
   const made = groupOf(bg, 3);
   assert.equal(made.name, 'New group');
   assert.equal(made.manual, true);
   assert.equal(bg.assign.get(3).manual, true);
   assert.deepEqual(port.received.filter((m) => m.type === 'editGroup'), [{ type: 'editGroup', groupId: made.id }]);
 
-  await bg.menuClick('tidy-tab-archive', 2);
+  await bg.menuClick('rolltop-tab-archive', 2);
   assert.deepEqual(browser._tabs.map((t) => t.id), [1, 3]);
   assert.equal(bg.state.archive[0].url, 'https://other.org/');
 });
@@ -455,13 +455,13 @@ test('menu clicks on a group row act on the group the sidebar reported', async (
   const groupId = bg.assign.get(1).groupId;
   port.send({ type: 'menuTarget', groupId });
 
-  await bg.menuClick('tidy-group-pin');
+  await bg.menuClick('rolltop-group-pin');
   assert.equal(bg.state.groups[groupId].pinned, true);
-  await bg.menuClick('tidy-group-toggle');
+  await bg.menuClick('rolltop-group-toggle');
   assert.equal(bg.state.groups[groupId].collapsed, true);
-  await bg.menuClick('tidy-group-rename');
+  await bg.menuClick('rolltop-group-rename');
   assert.deepEqual(port.received.filter((m) => m.type === 'editGroup'), [{ type: 'editGroup', groupId }]);
-  await bg.menuClick('tidy-group-archive');
+  await bg.menuClick('rolltop-group-archive');
   assert.deepEqual(browser._tabs.map((t) => t.id), [2]);
   assert.equal(bg.state.archive.length, 1);
 });

@@ -8,15 +8,15 @@ export const MAX_DEPTH = 3; // levels of group nesting
 // Context menu item ids. The background creates the items and handles clicks;
 // the sidebar adjusts the group items when its menu opens.
 export const MENU = {
-  archiveTab: 'tidy-tab-archive',
-  move: 'tidy-move',
-  moveNew: 'tidy-move-new',
-  moveSep: 'tidy-move-sep',
-  moveTo: 'tidy-move:', // + group id
-  rename: 'tidy-group-rename',
-  pinGroup: 'tidy-group-pin',
-  toggleGroup: 'tidy-group-toggle',
-  archiveGroup: 'tidy-group-archive',
+  archiveTab: 'rolltop-tab-archive',
+  move: 'rolltop-move',
+  moveNew: 'rolltop-move-new',
+  moveSep: 'rolltop-move-sep',
+  moveTo: 'rolltop-move:', // + group id
+  rename: 'rolltop-group-rename',
+  pinGroup: 'rolltop-group-pin',
+  toggleGroup: 'rolltop-group-toggle',
+  archiveGroup: 'rolltop-group-archive',
 };
 
 export function idleDays(tab, now) {

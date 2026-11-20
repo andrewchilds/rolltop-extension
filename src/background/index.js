@@ -3,13 +3,13 @@ import { classifyWithAI } from './classify-ai.js';
 import { MENU } from '../../extension/lib/model.js';
 
 const background = createBackground({ browser, classifyWithAI });
-background.start().catch((e) => console.error('Tidy failed to start', e));
+background.start().catch((e) => console.error('Rolltop failed to start', e));
 
 browser.browserAction.onClicked.addListener(() => browser.sidebarAction.toggle());
 
 browser.menus.create({
-  id: 'tidy-settings',
-  title: 'Tidy settings',
+  id: 'rolltop-settings',
+  title: 'Rolltop settings',
   contexts: ['browser_action'],
 });
 
@@ -45,6 +45,6 @@ browser.menus.onShown.addListener((info, tab) => {
 });
 
 browser.menus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'tidy-settings') browser.runtime.openOptionsPage();
+  if (info.menuItemId === 'rolltop-settings') browser.runtime.openOptionsPage();
   else background.menuClick(info.menuItemId, tab ? tab.id : undefined);
 });

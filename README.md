@@ -1,4 +1,4 @@
-# Tidy
+# Rolltop Browser
 
 A Firefox sidebar that groups, labels and archives tabs for you.
 
@@ -21,7 +21,7 @@ Then in Firefox open `about:debugging#/runtime/this-firefox`, choose **Load Temp
 
 `npm start` does the same in a throwaway profile through `web-ext`. It launches the installed Firefox, which applies any update Firefox has staged.
 
-Settings (API key, model, archive age) are under the add-on's Preferences, or right-click the toolbar button and choose **Tidy settings**.
+Settings (API key, model, archive age) are under the add-on's Preferences, or right-click the toolbar button and choose **Rolltop settings**.
 
 ## Hide the native tab strip
 
