@@ -500,6 +500,26 @@ document.addEventListener('click', (event) => {
   render();
 });
 
+// Middle-clicking a tab's row, a pinned tile or a group's row closes it, as
+// the row's own close button would. Open fields keep the default (paste).
+function middleTarget(event) {
+  if (event.button !== 1 || !snap || !event.target.closest || event.target.closest('input')) return null;
+  return event.target.closest('[data-ctx-tab], [data-ctx-group]');
+}
+
+// Firefox starts autoscroll on the press, before any click arrives.
+document.addEventListener('mousedown', (event) => {
+  if (middleTarget(event)) event.preventDefault();
+});
+
+document.addEventListener('auxclick', (event) => {
+  const node = middleTarget(event);
+  if (!node) return;
+  event.preventDefault();
+  if (node.dataset.ctxTab) send('closeTab', { tabId: Number(node.dataset.ctxTab) });
+  else send('archiveGroup', { groupId: node.dataset.ctxGroup });
+});
+
 // Double-clicking a group's row, a tab's row or a pinned tile renames it in
 // place. A group's arrow is left out: two quick clicks there toggle it twice.
 // So are its tag, which the first click already opened, and any open field.
