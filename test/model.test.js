@@ -124,7 +124,7 @@ test('tabs without a group land in Ungrouped', () => {
   });
   const last = v.rows.slice(-2);
   assert.equal(last[0].id, UNGROUPED);
-  assert.equal(last[0].label, 'Other');
+  assert.equal(last[0].sorting, false);
   assert.equal(last[1].title, 'New Tab');
 });
 

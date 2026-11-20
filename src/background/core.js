@@ -7,7 +7,7 @@ import {
 } from '../../extension/lib/model.js';
 import { applyPlan, clean, gcGroups, heuristicPlan } from '../../extension/lib/plan.js';
 
-export const DEFAULTS = { auto: true, archiveDays: 14, apiKey: '', model: 'claude-opus-5-5' };
+export const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-opus-5-5' };
 const ARCHIVE_CAP = 1000;
 const BATCH = 40;
 const SEARCH_LIMIT = 50;
@@ -404,11 +404,33 @@ export function createBackground({
     return out;
   }
 
-  // Auto-tidy: archive tabs nobody has looked at for `archiveDays`.
+  // Collapses each open group none of whose tabs, nested ones included, has
+  // been visited for `collapseHours`. Once per idle spell: a group opened by
+  // hand afterwards stays open until it is visited and goes idle again.
+  function collapseIdle(tabs) {
+    const cutoff = now() - state.settings.collapseHours * DAY / 24;
+    const fresh = new Map();
+    for (const t of tabs) {
+      const a = assign.get(t.id);
+      if (!a || !state.groups[a.groupId]) continue;
+      const seen = t.active || t.audible ? now() : t.lastAccessed || now();
+      for (const id of chain(state.groups, a.groupId)) fresh.set(id, Math.max(fresh.get(id) || 0, seen));
+    }
+    for (const [id, seen] of fresh) {
+      const g = state.groups[id];
+      if (g.collapsed || seen > cutoff || (g.idleCollapsedAt || 0) >= seen) continue;
+      g.collapsed = true;
+      g.idleCollapsedAt = now();
+    }
+  }
+
+  // Auto-tidy: collapse groups left alone for `collapseHours`, and archive
+  // tabs nobody has looked at for `archiveDays`.
   async function tidy() {
     if (!state.settings.auto) return;
     const cutoff = now() - state.settings.archiveDays * DAY;
     const tabs = await browser.tabs.query({});
+    collapseIdle(tabs);
     const stale = tabs.filter((t) => {
       if (t.pinned || t.active || t.audible || !isSortable(t)) return false;
       if ((t.lastAccessed || now()) > cutoff) return false;
@@ -480,14 +502,6 @@ export function createBackground({
         if (!g || !name) break;
         g.name = name;
         g.manual = true;
-        break;
-      }
-      // One group's tag; other groups with the same tag keep theirs.
-      case 'setGroupLabel': {
-        const label = clean(msg.label, 14);
-        if (!g || !label) break;
-        g.label = label;
-        g.manualLabel = true;
         break;
       }
       // An empty name goes back to the page's own title.

@@ -1,4 +1,4 @@
-const DEFAULTS = { auto: true, archiveDays: 14, apiKey: '', model: 'claude-opus-5-5' };
+const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-opus-5-5' };
 const $ = (id) => document.getElementById(id);
 
 async function load() {
@@ -8,11 +8,13 @@ async function load() {
   $('model').value = s.model;
   $('auto').checked = s.auto;
   $('archiveDays').value = s.archiveDays;
+  $('collapseHours').value = s.collapseHours;
 }
 
 async function save() {
   const { settings } = await browser.storage.local.get('settings');
   const days = Math.round(Number($('archiveDays').value));
+  const hours = Math.round(Number($('collapseHours').value));
   await browser.storage.local.set({
     settings: {
       ...DEFAULTS,
@@ -21,6 +23,7 @@ async function save() {
       model: $('model').value.trim() || DEFAULTS.model,
       auto: $('auto').checked,
       archiveDays: Number.isFinite(days) && days >= 1 ? days : DEFAULTS.archiveDays,
+      collapseHours: Number.isFinite(hours) && hours >= 1 ? hours : DEFAULTS.collapseHours,
     },
   });
 }

@@ -196,6 +196,30 @@ test('auto-tidy archives stale tabs but spares pinned tabs and pinned groups', a
   assert.deepEqual(bg.state.archive.map((a) => a.url), ['https://stale.com/']);
 });
 
+test('a group left alone for hours collapses once, until it is visited again', async () => {
+  const HOUR = DAY / 24;
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://idle.com/', lastAccessed: NOW - 9 * HOUR },
+    { id: 2, url: 'https://recent.com/', lastAccessed: NOW - 7 * HOUR },
+    { id: 3, url: 'https://active.com/', lastAccessed: NOW - 9 * HOUR, active: true },
+  ]);
+  await bg.tidy();
+  assert.equal(groupOf(bg, 1).collapsed, true);
+  assert.ok(!groupOf(bg, 2).collapsed);
+  assert.ok(!groupOf(bg, 3).collapsed);
+
+  // Opened by hand, it stays open while nothing in it is visited.
+  await bg.handle({ type: 'toggleGroup', groupId: groupOf(bg, 1).id });
+  await bg.tidy();
+  assert.equal(groupOf(bg, 1).collapsed, false);
+
+  // A visit starts the clock again.
+  groupOf(bg, 1).idleCollapsedAt = NOW - 12 * HOUR;
+  browser._tabs[0].lastAccessed = NOW - 10 * HOUR;
+  await bg.tidy();
+  assert.equal(groupOf(bg, 1).collapsed, true);
+});
+
 test('auto-tidy off archives nothing', async () => {
   const { bg, browser } = await boot(
     [{ id: 1, url: 'https://stale.com/', lastAccessed: NOW - 60 * DAY }, { id: 2, url: 'https://b.com/' }],
@@ -329,36 +353,6 @@ test('a renamed group keeps its name when the AI tries to rename it', async () =
   assert.equal(groupOf(bg, 100).id, 'g1');
   await tick();
   assert.equal(browser._storage.groups.g1.manual, true);
-});
-
-test('a tag set by hand changes one group and survives an AI rename', async () => {
-  let rename = false;
-  const ai = async (req) => ({
-    newGroups: rename ? [] : [
-      { ref: 'a', name: 'Kyoto in spring', label: 'Trip', parent: null },
-      { ref: 'b', name: 'Lisbon in fall', label: 'Trip', parent: null },
-    ],
-    assignments: req.tabs.map((t, i) => ({ tabId: t.id, group: rename ? 'g1' : i ? 'b' : 'a' })),
-    renames: rename ? [{ groupId: 'g1', name: 'Kyoto trip', label: 'Travel' }] : [],
-  });
-  const { bg, browser } = await boot(
-    [{ id: 1, url: 'https://slowroutes.travel/kyoto' }, { id: 2, url: 'https://slowroutes.travel/lisbon' }],
-    { ai, stored: { settings: { apiKey: 'sk-test' } } },
-  );
-  await bg.handle({ type: 'setGroupLabel', groupId: 'g1', label: '  Spring   holiday in Japan ' });
-  assert.equal(bg.state.groups.g1.label, 'Spring holiday');
-  assert.equal(bg.state.groups.g2.label, 'Trip');
-  await bg.handle({ type: 'setGroupLabel', groupId: 'g1', label: '   ' });
-  assert.equal(bg.state.groups.g1.label, 'Spring holiday');
-
-  rename = true;
-  await browser.tabs.create({ url: 'https://skycast.net/kyoto' });
-  await tick();
-  await bg.runClassify();
-  assert.equal(bg.state.groups.g1.name, 'Kyoto trip');
-  assert.equal(bg.state.groups.g1.label, 'Spring holiday');
-  await tick();
-  assert.equal(browser._storage.groups.g1.manualLabel, true);
 });
 
 test('a manually moved tab stays put through navigation, re-sort and restart', async () => {

@@ -42,7 +42,10 @@
   <p class="hint">claude-opus-5-5 is the default. claude-haiku-5-5 costs far less.</p>
 
   <h2>Auto-tidy</h2>
-  <label class="check"><input id="auto" type="checkbox"> Fade and archive tabs you have stopped using</label>
+  <label class="check"><input id="auto" type="checkbox"> Collapse groups and fade and archive tabs you have stopped using</label>
+  <label for="collapseHours">Collapse groups not visited for this many hours</label>
+  <input id="collapseHours" type="number" min="1" max="720">
+  <p class="hint">A group you open again stays open until you next leave it alone this long.</p>
   <label for="archiveDays">Archive tabs untouched for this many days</label>
   <input id="archiveDays" type="number" min="1" max="365">
   <p class="hint">Archived tabs are closed but stay searchable in the sidebar. Pinned tabs and tabs in pinned groups are never archived.</p>
