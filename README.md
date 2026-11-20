@@ -4,7 +4,7 @@ A Firefox sidebar that groups, labels and archives tabs for you.
 
 - **Groups by topic.** With an Anthropic API key, Claude files each tab into a named group ("Kyoto in spring", label "Trip"), nests sub-topics, and reuses existing groups. Without a key, tabs are grouped by website and nothing leaves the machine.
 - **Auto-tidy.** Untouched tabs fade after 2 and 5 days and are archived after 14 (configurable). Archived tabs are closed but stay searchable and can be reopened into their group. Closing a tab any other way archives it too.
-- **Pins.** Pinned tabs sit in a grid at the top. A pinned group, and everything nested in it, never fades or archives.
+- **Pins.** Pinned tabs sit in a grid at the top, in rows of one to six. Drag a tab or a pinned tile over the grid and the tiles make room: drop it within a row, or on a row's top or bottom edge to start a new one. A pinned group, and everything nested in it, never fades or archives.
 - **Right-click.** A tab row or pinned tile opens Firefox's own tab menu with **Archive tab** and **Move to group** added. A group row offers Rename, Pin, Collapse and Archive. A group you rename keeps its name, and a tab you move stays where you put it, whatever the classifier thinks.
 - **Middle-click.** A tab row or pinned tile closes that tab; a group row closes the group. Both are archived, so they can be reopened.
 - **Tags.** Click the tag beside a group's name to change it: pick one already in use or type a new one. It changes that group only, and the classifier leaves it alone afterwards.

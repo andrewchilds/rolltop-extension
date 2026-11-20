@@ -1,4 +1,4 @@
-import { buildView, canNest, MENU, UNGROUPED } from '../lib/model.js';
+import { buildView, canNest, MENU, PIN_MAX, UNGROUPED } from '../lib/model.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG = 'http://www.w3.org/2000/svg';
@@ -7,7 +7,6 @@ const ICONS = {
   chevron: { size: 11, box: 12, width: 1.5, paths: ['M4.5 2.5L8 6l-3.5 3.5'] },
   pin: { size: 14, box: 16, width: 1.4, paths: ['M6 2h4l-.5 4 2 2.5h-7l2-2.5z', 'M8 8.5V14'] },
   close: { size: 12, box: 12, width: 1.5, paths: ['M3 3l6 6M9 3l-6 6'] },
-  plus: { size: 14, box: 14, width: 1.5, paths: ['M7 2v10M2 7h10'] },
 };
 
 function icon(name, { filled = false, cls = '' } = {}) {
@@ -84,15 +83,6 @@ function pinNode(p) {
   );
 }
 
-// The blank cell that evens out the pin grid: opens a new pinned tab, and
-// takes a dropped tab as the last pin.
-function pinSlot() {
-  return el('button', {
-    type: 'button', class: 'pin-add', 'aria-label': 'New pinned tab', title: 'New pinned tab',
-    data: { act: 'newPinnedTab' },
-  }, icon('plus'));
-}
-
 function groupNode(r) {
   const fixed = r.id === UNGROUPED;
   const renaming = editing === r.id;
@@ -153,10 +143,11 @@ function tabNode(r) {
         class: 'row-main', role: 'button', tabindex: '0', style: indent,
         'aria-current': r.current ? 'page' : null, data: { act: 'activate', tab: r.tabId },
       }, tile(r), el('span', { class: 'ttitle' }, r.title)),
+    r.idleLabel ? el('span', { class: 'meta' }, r.idleLabel) : null,
+    // Laid over the end of the title while the row is hovered or focused.
     el('div', { class: 'acts' },
       actBtn('pinTab', 'Pin tab', { tab: r.tabId }, icon('pin')),
       actBtn('closeTab', 'Close tab', { tab: r.tabId }, icon('close')),
-      el('span', { class: 'meta' }, r.idleLabel),
     ),
   );
 }
@@ -205,6 +196,8 @@ let editingLabel = null; // id of the group whose tag is being edited in its row
 let menuTarget = null; // what this sidebar's open context menu was opened on
 let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
 let marked = null; // the drop target currently highlighted
+let gap = null; // the drop zone open in the pin grid: { spot, zone, node }
+let pinLayout = ''; // the pin grid's rows of tab ids as last rendered, as JSON
 
 function renameInput(value, label, maxlength) {
   const input = el('input', {
@@ -428,10 +421,11 @@ function render() {
       $('pins').hidden = !view.pins.length;
       // Left alone when unchanged, like the list: a double-click's first click
       // re-renders, and its target has to still be in the document.
-      const pinSig = JSON.stringify([view.pins, editingTab]);
+      const pinSig = JSON.stringify([view.pinRows, editingTab]);
       if (pinSig !== pinsSig) {
         pinsSig = pinSig;
-        $('pins').replaceChildren(...view.pins.map(pinNode), view.pins.length % 2 ? pinSlot() : '');
+        pinLayout = JSON.stringify(view.pinRows.map((row) => row.map((p) => p.tabId)));
+        $('pins').replaceChildren(...view.pinRows.map((row) => el('div', { class: 'pin-row' }, ...row.map(pinNode))));
       }
       const sig = JSON.stringify([view.rows, editing, editingTab, editingLabel]);
       if (sig !== listSig) {
@@ -493,7 +487,6 @@ document.addEventListener('click', (event) => {
     case 'reopenGroup': clearSearch(); send('reopenGroup', { groupId: group }); break;
     case 'reopenTab': clearSearch(); send('reopenTab', { archiveId: archive }); break;
     case 'newTab': send('newTab'); break;
-    case 'newPinnedTab': send('newTab', { pinned: true }); break;
     case 'settings': browser.runtime.openOptionsPage(); break;
     default: return;
   }
@@ -554,36 +547,106 @@ document.addEventListener('keydown', (event) => {
 // ---- drag and drop -----------------------------------------------------------
 // A tab dropped on a group joins it; dropped on a tab it also takes the place
 // before or after it. A group dropped on the middle of a group nests in it;
-// on the top or bottom edge it becomes its sibling there. A pinned tile can
-// be reordered among the pinned tiles. A tab dropped on the pin grid is pinned:
-// beside the tile it lands on, or last when dropped on the blank cell.
+// on the top or bottom edge it becomes its sibling there. Over the pin grid a
+// tab or pinned tile opens a drop zone where it would land: within a row, the
+// tiles there squeezing aside, or as a row of its own. Dropping sets the grid.
+
+// A spot in the pin grid: in `row` before the tile `before` (last when null),
+// or, with no `row`, as a new row before the row `before` (at the end when null).
+const END = { row: null, before: null };
+const PIN_GAP = 4; // between tiles, as in sidebar.css
+const GAP_MS = 160; // matches the drop zone's transitions in sidebar.css
+const sameSpot = (a, b) => !!a && !!b && a.row === b.row && a.before === b.before;
+const rowAfter = (rowEl) => {
+  let next = rowEl.nextElementSibling;
+  while (next && next.classList.contains('fresh')) next = next.nextElementSibling;
+  return next;
+};
+
+// Opens the drop zone at `spot` and closes the one open elsewhere.
+function setGap(spot, instant = false) {
+  if (sameSpot(gap && gap.spot, spot) || (!gap && !spot)) return;
+  if (gap) {
+    const old = gap.node;
+    gap = null;
+    old.classList.remove('open', 'instant');
+    old.classList.add('closing');
+    old.style.width = '';
+    if (motion) setTimeout(() => old.remove(), GAP_MS);
+    else old.remove();
+  }
+  if (!spot) return;
+  const zone = el('div', { class: 'pin-gap' });
+  const node = spot.row ? zone : el('div', { class: 'pin-row fresh' }, zone);
+  // Within a row the zone grows to an even share. Its width is animated, not
+  // its flex-grow: a tile's width is not linear in that, which skews the easing.
+  let share = null;
+  if (spot.row) {
+    const tiles = spot.row.querySelectorAll('.pin:not(.lifted)').length;
+    share = (spot.row.getBoundingClientRect().width - PIN_GAP * tiles) / (tiles + 1);
+  }
+  (spot.row || $('pins')).insertBefore(node, spot.before);
+  if (instant) node.classList.add('instant');
+  else node.getBoundingClientRect(); // lets the zone grow from nothing
+  node.classList.add('open');
+  if (share != null) zone.style.width = share + 'px';
+  gap = { spot, zone, node };
+}
+
+// Where the pointer says the dragged tile goes. Measured from the tiles'
+// centres, which stay on their side of the pointer as the zone opens, so the
+// zone does not chase itself.
+function pinSpot(event) {
+  if (gap && gap.node.contains(event.target)) return gap.spot;
+  const rowEl = event.target.closest('.pin-row:not(.fresh)');
+  const tiles = rowEl ? [...rowEl.querySelectorAll('.pin:not(.lifted)')] : [];
+  if (!tiles.length) return gap ? gap.spot : null; // between rows
+  const rect = rowEl.getBoundingClientRect();
+  const y = (event.clientY - rect.top) / rect.height;
+  // The top and bottom edges make a new row; so does all of a full row.
+  const edge = tiles.length >= PIN_MAX ? 0.5 : 0.25;
+  if (y < edge) return { row: null, before: rowEl };
+  if (y >= 1 - edge) return { row: null, before: rowAfter(rowEl) };
+  const before = tiles.find((t) => {
+    const r = t.getBoundingClientRect();
+    return event.clientX < r.left + r.width / 2;
+  });
+  return { row: rowEl, before: before || null };
+}
+
+// Moves the drop zone under the pointer and returns the drop that would set
+// the grid as it then stands, the zone standing for the dragged tile.
+function pinDrop(event) {
+  const pins = $('pins');
+  const over = !pins.hidden && pins.contains(event.target);
+  // An empty grid keeps its one zone open, as there is nothing else to aim at.
+  const empty = !pins.querySelector('.pin:not(.lifted)');
+  setGap((over && pinSpot(event)) || (empty && !pins.hidden ? END : null));
+  if (!over || !gap) return null;
+  const id = drag.tabId ?? drag.pinId;
+  const rows = [...pins.querySelectorAll('.pin-row')]
+    .map((rowEl) => [...rowEl.children].flatMap((n) => {
+      if (n === gap.zone) return [id];
+      return n.matches('.pin:not(.lifted)') ? [Number(n.dataset.ctxTab)] : [];
+    }))
+    .filter((row) => row.length);
+  return { rows, msg: ['layoutPins', { rows }] };
+}
+
+// Shown at once; the next snapshot confirms it.
+function applyPinLayout(rows) {
+  let at = 0;
+  rows.forEach((row, r) => row.forEach((id) => {
+    const tab = snap.tabs.find((t) => t.id === id);
+    if (tab) Object.assign(tab, { pinned: true, pinRow: r, index: at++ - 1e6 }); // ahead of every unpinned tab
+  }));
+}
 
 function dropFor(event) {
   if (!drag || !snap || !event.target.closest) return null;
-  const slot = event.target.closest('#pins .pin-add');
-  const pin = event.target.closest('#pins .pin');
-  if (slot) {
-    if (drag.tabId != null) return { row: slot, where: 'into', msg: ['pinTab', { tabId: drag.tabId, pinned: true }] };
-    const last = slot.previousElementSibling;
-    const nearTabId = last ? Number(last.dataset.ctxTab) : drag.pinId;
-    if (drag.pinId == null || nearTabId === drag.pinId) return null;
-    return { row: slot, where: 'into', msg: ['placeTab', { tabId: drag.pinId, nearTabId, after: true }] };
-  }
-  if (pin && drag.tabId != null) {
-    const rect = pin.getBoundingClientRect();
-    const after = (event.clientX - rect.left) / rect.width > 0.5;
-    return {
-      row: pin,
-      where: after ? 'right' : 'left',
-      msg: ['pinTab', { tabId: drag.tabId, pinned: true, nearTabId: Number(pin.dataset.ctxTab), after }],
-    };
-  }
-  if (drag.pinId != null) {
-    const nearTabId = pin ? Number(pin.dataset.ctxTab) : drag.pinId;
-    if (nearTabId === drag.pinId) return null;
-    const rect = pin.getBoundingClientRect();
-    const after = (event.clientX - rect.left) / rect.width > 0.5;
-    return { row: pin, where: after ? 'right' : 'left', msg: ['placeTab', { tabId: drag.pinId, nearTabId, after }] };
+  if (drag.groupId == null) {
+    const drop = pinDrop(event);
+    if (drop || drag.pinId != null) return drop;
   }
   const row = event.target.closest('#list .row');
   if (!row) return null;
@@ -609,10 +672,11 @@ function dropFor(event) {
   return { row, where, msg: ['moveGroup', { groupId: drag.groupId, targetId: ctxGroup, where }] };
 }
 
+// Highlights the list row a drop would land on. The pin grid shows its zone instead.
 function markDrop(drop) {
   if (marked) marked.row.classList.remove('drop-' + marked.where);
-  if (drop) drop.row.classList.add('drop-' + drop.where);
-  marked = drop;
+  marked = drop && drop.row ? drop : null;
+  if (marked) marked.row.classList.add('drop-' + marked.where);
 }
 
 document.addEventListener('dragstart', (event) => {
@@ -623,16 +687,23 @@ document.addEventListener('dragstart', (event) => {
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('application/x-rolltop-row', '1'); // Firefox needs some data to start a drag
   row.classList.add('dragging');
-  // With nothing pinned there is no grid to drop on: show a blank cell for the
-  // drag. Deferred, as changing the layout inside dragstart can cancel the drag.
-  if (drag.tabId != null && $('pins').hidden) {
-    requestAnimationFrame(() => {
-      if (!drag) return;
-      $('pins').replaceChildren(pinSlot());
-      pinsSig = null;
+  // Deferred, as changing the layout inside dragstart can cancel the drag.
+  requestAnimationFrame(() => {
+    if (!drag) return;
+    if (drag.pinId != null) {
+      // The tile leaves the grid for a zone in its place, so nothing moves yet.
+      // It stays in the document: a drag needs its source there.
+      const rowEl = row.parentNode;
+      const alone = rowEl.querySelectorAll('.pin').length === 1;
+      row.classList.add('lifted');
+      rowEl.classList.toggle('vacant', alone);
+      setGap(alone ? { row: null, before: rowAfter(rowEl) } : { row: rowEl, before: row.nextElementSibling }, true);
+    } else if (drag.tabId != null && $('pins').hidden) {
+      // With nothing pinned there is no grid to drop on: show a zone for the drag.
       $('pins').hidden = false;
-    });
-  }
+      setGap(END, true);
+    }
+  });
 });
 document.addEventListener('dragover', (event) => {
   const drop = dropFor(event);
@@ -645,11 +716,18 @@ document.addEventListener('drop', (event) => {
   const drop = dropFor(event);
   if (!drop) return;
   event.preventDefault();
-  send(...drop.msg);
+  if (!drop.rows) {
+    send(...drop.msg);
+  } else if (JSON.stringify(drop.rows) !== pinLayout) {
+    applyPinLayout(drop.rows);
+    send(...drop.msg);
+  }
 });
 document.addEventListener('dragend', () => {
   markDrop(null);
   drag = null;
+  gap = null;
+  pinsSig = null; // the grid was rearranged for the drag: build it again
   document.querySelectorAll('.dragging').forEach((node) => node.classList.remove('dragging'));
   render();
 });

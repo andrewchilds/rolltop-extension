@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { alertOf, buildView, UNGROUPED } from '../extension/lib/model.js';
+import { alertOf, buildView, pinRowsOf, UNGROUPED } from '../extension/lib/model.js';
 import { mockArchive, mockSnapshot } from './fixture.js';
 
 const NOW = 1_800_000_000_000;
@@ -160,4 +160,25 @@ test('a group whose open tabs are all pinned is not listed', () => {
 
   const found = buildView({ ...snap, auto: true, query: 'kyoto', now: NOW });
   assert.deepEqual(found.groupResults, []);
+});
+
+test('pinned tiles fall into the rows they were laid out in', () => {
+  const ids = (rows) => rows.map((row) => row.map((p) => p.id).join(''));
+  const pins = (spec) => spec.map(([id, row]) => ({ id, row }));
+  // Never laid out: pairs.
+  assert.deepEqual(ids(pinRowsOf(pins([['a'], ['b'], ['c']]))), ['ab', 'c']);
+  // Laid out: neighbours with the same row number share a row.
+  assert.deepEqual(ids(pinRowsOf(pins([['a', 0], ['b', 0], ['c', 0], ['d', 1], ['e', 2], ['f', 2]]))), ['abc', 'd', 'ef']);
+  // A tile closing shrinks its row and leaves the others alone.
+  assert.deepEqual(ids(pinRowsOf(pins([['a', 0], ['b', 0], ['e', 2], ['f', 2]]))), ['ab', 'ef']);
+  // A new pin fills a lone tile's row, or starts its own.
+  assert.deepEqual(ids(pinRowsOf(pins([['a', 0], ['b', 0], ['c', 0], ['d', 1], ['e']]))), ['abc', 'de']);
+  assert.deepEqual(ids(pinRowsOf(pins([['a', 0], ['b', 0], ['c', 0], ['d']]))), ['abc', 'd']);
+  // No row holds more than six.
+  assert.deepEqual(ids(pinRowsOf(pins('abcdefgh'.split('').map((id) => [id, 0])))), ['abcdef', 'gh']);
+
+  const snap = mockSnapshot(NOW);
+  snap.tabs.filter((t) => t.pinned).forEach((t, i) => { t.pinRow = i < 3 ? 0 : 1; });
+  const v = buildView({ ...snap, auto: true, query: '', now: NOW });
+  assert.deepEqual(v.pinRows.map((row) => row.length), [3, 1]);
 });

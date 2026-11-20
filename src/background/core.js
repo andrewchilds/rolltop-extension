@@ -16,6 +16,7 @@ const LOG_CAP = 20; // sorting runs kept for the options page
 const AI_RECENT = 30 * DAY;
 const TAB_KEY = 'tidy';
 const NAME_KEY = 'tidy-name';
+const ROW_KEY = 'tidy-row';
 
 const isSortable = (tab) => /^https?:/.test(tab.url || '') && !tab.incognito;
 const hostOf = (url) => {
@@ -46,6 +47,7 @@ export function createBackground({
   // hand; the classifier leaves it where it is, even after it navigates.
   const assign = new Map();
   const names = new Map(); // tabId -> the title the user gave the tab, shown in place of the page's
+  const pinRows = new Map(); // tabId -> the row of the pin grid a pinned tab was laid out in
   const queue = new Set(); // tabIds waiting for a classifier run
   const seen = new Map(); // tabId -> last known tab, since onRemoved only gives an id
   const archiving = new Set(); // tabIds being closed by archiveTabs
@@ -91,6 +93,16 @@ export function createBackground({
     }
   }
 
+  function setPinRow(tabId, row) {
+    if (row == null) {
+      pinRows.delete(tabId);
+      browser.sessions.removeTabValue(tabId, ROW_KEY).catch(() => {});
+    } else {
+      pinRows.set(tabId, row);
+      browser.sessions.setTabValue(tabId, ROW_KEY, row).catch(() => {});
+    }
+  }
+
   function gc() {
     const used = new Set();
     assign.forEach((a) => used.add(a.groupId));
@@ -121,6 +133,7 @@ export function createBackground({
           url: t.url || '',
           favIconUrl: t.favIconUrl || '',
           pinned: !!t.pinned,
+          pinRow: t.pinned ? pinRows.get(t.id) ?? null : null,
           active: !!t.active,
           attention: !!t.attention,
           lastAccessed: t.lastAccessed || now(),
@@ -431,10 +444,25 @@ export function createBackground({
       }
       case 'pinTab':
         await browser.tabs.update(msg.tabId, { pinned: !!msg.pinned });
-        // Dropped on a pinned tile: take the place beside it. Pinning moved the
-        // tab, so read where it is now.
-        if (msg.nearTabId != null) await placeBeside(await browser.tabs.get(msg.tabId), msg.nearTabId, msg.after);
+        setPinRow(msg.tabId, null);
         break;
+      // The pin grid as arranged by a drop: rows of tab ids. Tabs not pinned
+      // yet are pinned, and the tab strip takes the same order.
+      case 'layoutPins': {
+        const rows = (Array.isArray(msg.rows) ? msg.rows : []).filter(Array.isArray);
+        let index = 0;
+        for (const [r, row] of rows.entries()) {
+          for (const tabId of row) {
+            const tab = await browser.tabs.get(tabId).catch(() => null);
+            if (!tab || tab.id == null || tab.windowId !== msg.windowId) continue;
+            if (!tab.pinned) await browser.tabs.update(tabId, { pinned: true });
+            await browser.tabs.move(tabId, { index });
+            setPinRow(tabId, r);
+            index += 1;
+          }
+        }
+        break;
+      }
       case 'newTab':
         await browser.tabs.create({ windowId: msg.windowId, pinned: !!msg.pinned });
         break;
@@ -476,10 +504,6 @@ export function createBackground({
         if (msg.nearTabId != null) await placeBeside(tab, msg.nearTabId, msg.after);
         break;
       }
-      // Reordering only, as when a pinned tile is dragged within the pin grid.
-      case 'placeTab':
-        await placeBeside(await browser.tabs.get(msg.tabId), msg.nearTabId, msg.after);
-        break;
       // Drag and drop of a group: beside another group, or into it.
       case 'moveGroup': {
         const target = state.groups[msg.targetId];
@@ -611,6 +635,8 @@ export function createBackground({
       if (v && state.groups[v.groupId]) assign.set(t.id, v);
       const name = await browser.sessions.getTabValue(t.id, NAME_KEY).catch(() => null);
       if (name) names.set(t.id, name);
+      const row = await browser.sessions.getTabValue(t.id, ROW_KEY).catch(() => null);
+      if (Number.isInteger(row)) pinRows.set(t.id, row);
     }
     gc();
 
@@ -627,6 +653,7 @@ export function createBackground({
       if (!archiving.delete(tabId) && tab && isSortable(tab)) record(tab);
       assign.delete(tabId);
       names.delete(tabId);
+      pinRows.delete(tabId);
       queue.delete(tabId);
       gc();
       changed();
@@ -653,6 +680,10 @@ export function createBackground({
       if (names.has(removed)) {
         setName(added, names.get(removed));
         names.delete(removed);
+      }
+      if (pinRows.has(removed)) {
+        setPinRow(added, pinRows.get(removed));
+        pinRows.delete(removed);
       }
       push();
     });

@@ -4,6 +4,7 @@
 export const DAY = 86400000;
 export const UNGROUPED = '__ungrouped';
 export const MAX_DEPTH = 3; // levels of group nesting
+export const PIN_MAX = 6; // pinned tiles in one row
 
 // Context menu item ids. The background creates the items and handles clicks;
 // the sidebar adjusts the group items when its menu opens.
@@ -107,6 +108,21 @@ export function alertOf(title) {
 const shown = (t) => t.name || t.title || t.url;
 const searchText = (t) => `${t.name || ''} ${t.title || ''}`;
 
+// Splits pinned tiles, in tab order, into the rows of the pin grid. Each tile
+// carries the row number it was last laid out in; neighbours sharing one share
+// a row. A tile that was never laid out fills a row up to a pair.
+export function pinRowsOf(pins) {
+  const rows = [];
+  for (const p of pins) {
+    const last = rows[rows.length - 1];
+    const joins = last && last.length < PIN_MAX
+      && (p.row == null ? last.length < 2 : last[0].row === p.row);
+    if (joins) last.push(p);
+    else rows.push([p]);
+  }
+  return rows;
+}
+
 export function monoOf(title) {
   const ch = (title || '').trim().charAt(0);
   return ch ? ch.toUpperCase() : '•';
@@ -188,6 +204,7 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       hue: hueOf(groupOf(t)),
       current: !!t.active,
       badge: alert.count || (t.attention ? '' : null),
+      row: t.pinRow ?? null,
     };
   });
 
@@ -301,6 +318,7 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
 
   return {
     pins,
+    pinRows: pinRowsOf(pins),
     rows,
     searching: !!q,
     groupResults,

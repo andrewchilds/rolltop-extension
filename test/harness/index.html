@@ -23,6 +23,7 @@ const params = new URLSearchParams(location.search);
 if (params.has('w')) document.body.style.width = params.get('w') + 'px';
 const snap = mockSnapshot();
 const sent = [];
+window.__sent = sent; // for scripted checks after load
 const menuCalls = [];
 const menuCall = (name) => (...args) => { menuCalls.push([name, ...args]); };
 let listener = () => {};

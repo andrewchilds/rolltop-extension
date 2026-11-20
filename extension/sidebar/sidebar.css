@@ -125,14 +125,14 @@ nav {
 }
 
 /* Pinned tabs */
-.pins {
-  flex: none;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-}
+/* Rows of one to six tiles, each row sharing the full width. */
+.pins { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.pin-row { display: flex; gap: 4px; min-width: 0; }
 .pin {
   position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  container-type: inline-size;
   border-radius: 8px;
   background: var(--pin-bg);
 }
@@ -182,20 +182,41 @@ nav {
   pointer-events: none;
 }
 .pin .badge.dot { top: 4px; left: 28px; min-width: 8px; width: 8px; height: 8px; padding: 0; }
-.pin-add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: var(--pin-bg);
-  color: var(--muted);
-  cursor: pointer;
+/* Too narrow for a title: the favicon alone, shrinking with the tile. */
+@container (max-width: 76px) {
+  .pin-main { justify-content: center; padding: 6px 2px; }
+  .pin-title, .pin .act, .pin.editing .tile { display: none; }
+  .tile.big { flex: 0 1 28px; min-width: 0; height: auto; aspect-ratio: 1; }
+  .pin .badge, .pin .badge.dot { left: auto; right: 1px; top: 1px; }
 }
-.pin-add:only-child { grid-column: 1 / -1; }
-.pin-add:hover { background: var(--hover); color: var(--fg); }
+/* The drop zone a drag opens in the grid. It grows from nothing to the width
+   the script gives it, its neighbours giving way; the negative margin cancels
+   the flex gap until then. */
+.pin-gap {
+  flex: none;
+  width: 0;
+  margin-right: -4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: 1.5px dashed var(--accent);
+  outline-offset: -1.5px;
+  opacity: 0;
+  transition: width 160ms ease-in-out, margin 160ms ease-in-out, opacity 160ms ease-in-out;
+}
+.pin-gap.open, .pin-row.fresh.open > .pin-gap { margin-right: 0; opacity: 1; }
+.pin-row.fresh > .pin-gap { flex: 1; }
+.pin-row.fresh {
+  height: 0;
+  margin-bottom: -4px;
+  transition: height 160ms ease-in-out, margin 160ms ease-in-out;
+}
+.pin-row.fresh.open { height: 40px; margin-bottom: 0; }
+.instant, .instant > .pin-gap { transition: none; }
+.closing { pointer-events: none; }
+/* The tile being dragged is out of the grid, its zone standing in for it. */
+.pin.lifted { position: absolute; visibility: hidden; pointer-events: none; }
+.pin-row.vacant { margin-bottom: -4px; }
 
 /* Favicon tile, tinted with the group color */
 .tile {
@@ -228,6 +249,7 @@ nav {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
 }
 .row {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
@@ -349,34 +371,43 @@ nav {
 @keyframes row-out { to { height: 0; margin-top: 0; opacity: 0; } }
 .row.enter { overflow: hidden; animation: row-in 200ms ease-in-out; }
 .row.exit { overflow: hidden; pointer-events: none; animation: row-out 200ms ease-in-out forwards; }
-.row.dragging, .pin.dragging { opacity: 0.4 !important; }
+.row.dragging { opacity: 0.4 !important; }
 /* Insertion lines are their own boxes: a shadow would bend around the corners. */
-.row.drop-before, .row.drop-after { position: relative; }
-.row.drop-before::after, .row.drop-after::after, .pin.drop-left::after, .pin.drop-right::after {
+.row.drop-before::after, .row.drop-after::after {
   content: "";
   position: absolute;
   background: var(--accent);
   pointer-events: none;
 }
-.pin.drop-left::after, .pin.drop-right::after { top: 0; bottom: 0; width: 3px; }
-.pin.drop-left::after { left: -3px; }
-.pin.drop-right::after { right: -3px; }
 .row.drop-before::after, .row.drop-after::after { left: 0; right: 0; height: 2px; }
 .row.drop-before::after { top: -2px; }
 .row.drop-after::after { bottom: -2px; }
-.pin-add.drop-into { background: var(--hover); box-shadow: inset 0 0 0 2px var(--accent); }
 .row.drop-into { background: var(--hover); box-shadow: inset 0 0 0 2px var(--accent); }
 .ttitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Hover actions share their slot with the count or idle age. */
+/* Hover actions. A group row keeps a slot for them. */
 .acts {
-  position: relative;
   flex: none;
   display: flex;
   align-items: center;
   width: 48px;
   height: 24px;
 }
+/* A tab's title runs the full width; the actions cover its end while the row
+   is hovered or focused, on the row's own background. */
+.tab .acts {
+  position: absolute;
+  right: 0;
+  top: 2px;
+  padding-left: 14px;
+  border-radius: 0 7px 7px 0;
+  background: linear-gradient(to right, transparent, var(--bg) 12px);
+  opacity: 0;
+  pointer-events: none;
+}
+.tab.current .acts { background: linear-gradient(to right, transparent, var(--card) 12px); }
+.tab:hover .acts, .tab:focus-within .acts { opacity: 1; pointer-events: auto; }
+.tab.editing .acts, .tab.dragging .acts { display: none; }
 .act {
   display: flex;
   align-items: center;
@@ -393,16 +424,13 @@ nav {
 .act:hover { background: var(--hover); }
 .row:hover .act, .row:focus-within .act, .pin:hover .act, .pin:focus-within .act, .act.on { opacity: 1; }
 .meta {
-  position: absolute;
-  right: 7px;
-  top: 0;
-  line-height: 24px;
-  font-size: 12px;
+  flex: none;
+  padding: 0 7px 0 2px;
+  font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
-.tab .meta { font-size: 11px; }
 .row:not(.static):hover .meta, .row:not(.static):focus-within .meta { visibility: hidden; }
 
 /* Search results */

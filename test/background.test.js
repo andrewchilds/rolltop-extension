@@ -581,34 +581,44 @@ test('groups can be reordered, nested and un-nested, within the depth limit', as
   assert.equal((await bg.snapshot()).groups[d].parentId, a);
 });
 
-test('a pinned tab can be placed before or after another without changing groups', async () => {
+test('a pin grid layout orders the pinned tabs and records their rows', async () => {
   const { bg, browser } = await boot([
     { id: 1, url: 'https://a.com/', pinned: true },
     { id: 2, url: 'https://b.com/', pinned: true },
     { id: 3, url: 'https://c.com/', pinned: true },
+    { id: 4, url: 'https://d.com/', pinned: true },
+    { id: 5, url: 'https://e.com/' },
   ]);
   const before = bg.assign.get(3);
-  await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 1, after: false });
-  assert.deepEqual(browser._tabs.map((t) => t.id), [3, 1, 2]);
-  await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 2, after: true });
-  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 2, 3]);
-  await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 3, after: true });
-  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 2, 3]);
+  const rowsOf = async () => (await bg.snapshot()).tabs.map((t) => t.pinRow);
+  assert.deepEqual(await rowsOf(), [null, null, null, null, null]);
+
+  // Tab 3 moves between 1 and 2, leaving 4 on a row of its own.
+  await bg.handle({ type: 'layoutPins', windowId: 1, rows: [[1, 3, 2], [4]] });
+  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 3, 2, 4, 5]);
+  assert.deepEqual(await rowsOf(), [0, 0, 0, 1, null]);
   assert.deepEqual(bg.assign.get(3), before);
+
+  // A tab that was not pinned is pinned where it was dropped.
+  await bg.handle({ type: 'layoutPins', windowId: 1, rows: [[5], [1, 3, 2], [4]] });
+  assert.deepEqual(browser._tabs.map((t) => [t.id, t.pinned]), [[5, true], [1, true], [3, true], [2, true], [4, true]]);
+  assert.deepEqual(await rowsOf(), [0, 1, 1, 1, 2]);
+
+  // Unpinning forgets the row; the rest keep theirs.
+  await bg.handle({ type: 'pinTab', tabId: 3, pinned: false });
+  assert.deepEqual(await rowsOf(), [0, 1, null, 1, 2]);
 });
 
-test('a tab dropped on a pinned tile is pinned beside it', async () => {
-  const { bg, browser } = await boot([
+test('pin grid rows survive a restart', async () => {
+  const tabs = [
     { id: 1, url: 'https://a.com/', pinned: true },
     { id: 2, url: 'https://b.com/', pinned: true },
-    { id: 3, url: 'https://c.com/' },
-    { id: 4, url: 'https://d.com/' },
-  ]);
-  await bg.handle({ type: 'pinTab', tabId: 4, pinned: true, nearTabId: 2, after: false });
-  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 4, 2, 3]);
-  assert.equal(browser._tabs[1].pinned, true);
-  await bg.handle({ type: 'pinTab', tabId: 3, pinned: true });
-  assert.deepEqual(browser._tabs.filter((t) => t.pinned).map((t) => t.id), [1, 4, 2, 3]);
+  ];
+  const { bg, browser } = await boot(tabs);
+  await bg.handle({ type: 'layoutPins', windowId: 1, rows: [[1], [2]] });
+  const again = createBackground({ browser, now: () => NOW, delay: FAST });
+  await again.start();
+  assert.deepEqual((await again.snapshot()).tabs.map((t) => t.pinRow), [0, 1]);
 });
 
 test('a renamed tab shows its new title until the name is cleared, and keeps it through the archive', async () => {
