@@ -1,0 +1,40 @@
+{
+  "manifest_version": 2,
+  "name": "Tidy",
+  "version": "0.1.0",
+  "description": "A sidebar that groups, labels and archives your tabs for you.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tidy@tidy-browser.local",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": { "required": ["none"], "optional": ["browsingActivity"] }
+    }
+  },
+  "icons": { "48": "icons/tidy.svg", "96": "icons/tidy.svg" },
+  "permissions": [
+    "tabs",
+    "sessions",
+    "storage",
+    "alarms",
+    "menus",
+    "menus.overrideContext",
+    "https://api.anthropic.com/*"
+  ],
+  "background": { "scripts": ["dist/background.js"] },
+  "sidebar_action": {
+    "default_title": "Tidy",
+    "default_panel": "sidebar/sidebar.html",
+    "default_icon": "icons/tidy.svg"
+  },
+  "browser_action": {
+    "default_title": "Toggle Tidy sidebar",
+    "default_icon": "icons/tidy.svg"
+  },
+  "options_ui": { "page": "options/options.html" },
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": { "default": "Alt+Shift+T" },
+      "description": "Toggle the Tidy sidebar"
+    }
+  }
+}

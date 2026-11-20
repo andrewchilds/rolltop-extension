@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tidy settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 16px 20px 24px; max-width: 620px; }
+  h2 { font-size: 15px; margin: 20px 0 6px; }
+  h2:first-child { margin-top: 0; }
+  p { margin: 0 0 10px; }
+  .hint { font-size: 13px; opacity: 0.75; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  label.check { display: flex; align-items: center; gap: 8px; }
+  input { font: inherit; padding: 6px 8px; box-sizing: border-box; }
+  input[type="password"], input[type="text"] { width: 100%; }
+  input[type="number"] { width: 90px; }
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+  button { font: inherit; padding: 6px 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+<form id="form">
+  <h2>AI sorting</h2>
+  <p>With an Anthropic API key, Tidy asks Claude to group tabs by what you are doing. Without one, tabs are grouped by website and nothing leaves this computer.</p>
+  <p class="hint">What is sent when a tab needs sorting: its title, its address without the query string or fragment, and the names of your existing groups with a few of their tab titles. Private windows are never sent. The key is stored unencrypted in this Firefox profile.</p>
+  <label for="apiKey">Anthropic API key</label>
+  <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+  <label for="model">Model</label>
+  <input id="model" type="text" autocomplete="off" spellcheck="false">
+  <p class="hint">claude-opus-5-5 is the default. claude-haiku-5-5 costs far less.</p>
+
+  <h2>Auto-tidy</h2>
+  <label class="check"><input id="auto" type="checkbox"> Fade and archive tabs you have stopped using</label>
+  <label for="archiveDays">Archive tabs untouched for this many days</label>
+  <input id="archiveDays" type="number" min="1" max="365">
+  <p class="hint">Archived tabs are closed but stay searchable in the sidebar. Pinned tabs and tabs in pinned groups are never archived.</p>
+
+  <div class="actions">
+    <button type="submit">Save</button>
+    <button type="button" id="resort">Save and re-sort all open tabs</button>
+    <span id="status" role="status" class="hint"></span>
+  </div>
+</form>
+<script src="options.js"></script>
+</body>
+</html>

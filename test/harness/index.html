@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tidy sidebar harness</title>
+<link rel="stylesheet" href="/extension/sidebar/sidebar.css">
+</head>
+<body>
+<!--
+  Renders the real sidebar against the mockup's sample data, outside Firefox's
+  extension runtime. Serve the repo root (python3 -m http.server) and open
+  /test/harness/ — add ?q=shopping to see search results, ?edit=trip for a
+  group's rename field, ?ctx=<selector> to right-click a row,
+  ?drag=<selector>&over=<selector>&y=0.5 to drag one row over another (add
+  &drop=1 to drop it). Messages sent to
+  the background and browser.menus calls are logged in <html data-log>.
+-->
+<script type="module">
+import { mockSnapshot, mockArchive } from '/test/fixture.js';
+import { matchesQuery } from '/extension/lib/model.js';
+
+const params = new URLSearchParams(location.search);
+if (params.has('w')) document.body.style.width = params.get('w') + 'px';
+const snap = mockSnapshot();
+const sent = [];
+const menuCalls = [];
+const menuCall = (name) => (...args) => { menuCalls.push([name, ...args]); };
+let listener = () => {};
+window.browser = {
+  windows: { getCurrent: async () => ({ id: 1 }) },
+  menus: {
+    overrideContext: menuCall('overrideContext'),
+    update: menuCall('update'),
+    refresh: menuCall('refresh'),
+    onShown: { addListener: (fn) => { window.__menuShown = fn; } },
+    onHidden: { addListener() {} },
+  },
+  runtime: {
+    connect: () => {
+      return {
+        onMessage: { addListener: (fn) => { listener = fn; queueMicrotask(() => fn(snap)); } },
+        onDisconnect: { addListener() {} },
+        postMessage: (msg) => {
+          sent.push(msg);
+          if (msg.type !== 'search') return;
+          const q = msg.query.trim().toLowerCase();
+          const tabs = mockArchive().filter((a) => matchesQuery(a.title, a.url, q));
+          queueMicrotask(() => listener({ type: 'archiveHits', query: msg.query, tabs }));
+        },
+      };
+    },
+  },
+};
+
+const html = await (await fetch('/extension/sidebar/sidebar.html')).text();
+const doc = new DOMParser().parseFromString(html, 'text/html');
+document.body.append(...[...doc.body.children].filter((n) => n.tagName !== 'SCRIPT'));
+await import('/extension/sidebar/sidebar.js');
+await document.fonts.ready;
+
+if (params.has('q')) {
+  await new Promise((r) => setTimeout(r, 50));
+  const input = document.getElementById('q');
+  input.value = params.get('q');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+if (params.has('edit') || params.has('ctx')) await new Promise((r) => setTimeout(r, 50));
+if (params.has('edit')) listener({ type: 'editGroup', groupId: params.get('edit') });
+if (params.has('ctx')) {
+  document.querySelector(params.get('ctx'))
+    .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  window.__menuShown();
+}
+if (params.has('drag')) {
+  await new Promise((r) => setTimeout(r, 50));
+  const dataTransfer = new DataTransfer();
+  const fire = (node, type, clientY = 0) =>
+    node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, clientY }));
+  const source = document.querySelector(params.get('drag'));
+  const target = document.querySelector(params.get('over'));
+  const rect = target.getBoundingClientRect();
+  const y = rect.top + rect.height * Number(params.get('y') ?? 0.5);
+  fire(source, 'dragstart');
+  fire(target, 'dragover', y);
+  if (params.has('drop')) {
+    fire(target, 'drop', y);
+    fire(source, 'dragend');
+  }
+}
+document.documentElement.dataset.log = JSON.stringify({ sent, menuCalls });
+</script>
+</body>
+</html>

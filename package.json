@@ -1,0 +1,22 @@
+{
+  "name": "tidy-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Firefox sidebar that groups, labels and archives tabs automatically.",
+  "scripts": {
+    "build": "esbuild src/background/index.js --bundle --format=iife --target=firefox142 --outfile=extension/dist/background.js",
+    "watch": "npm run build -- --watch",
+    "test": "node --test \"test/*.test.js\"",
+    "lint": "npm run build && web-ext lint --source-dir extension",
+    "start": "npm run build && web-ext run --source-dir extension",
+    "package": "npm run build && web-ext build --source-dir extension --overwrite-dest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "web-ext": "^10.8.0"
+  }
+}
