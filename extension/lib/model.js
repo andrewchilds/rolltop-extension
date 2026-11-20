@@ -88,9 +88,15 @@ export function pathName(groups, id) {
   return chain(groups, id).map((x) => groups[x].name).join(' / ');
 }
 
-// A group's pin covers its own tabs only; sub-groups are pinned separately.
+// The list has one line across it. Top-level groups marked `pinned` sit above
+// it with everything nested in them: kept by the user, never faded or archived,
+// and closed to the classifier. Whether group `id` is above the line.
+// What the two sides of the line are called. The grid of pinned tabs above
+// them, Favorites, has no heading.
+export const SECTIONS = { above: 'Pinned', below: 'Browsing' };
+
 export function isHardPinned(groups, id) {
-  return !!groups[id]?.pinned;
+  return !!groups[chain(groups, id)[0]]?.pinned;
 }
 
 // The unread count a page puts in its title, as in "(3) Inbox", "[2] Chat" or
@@ -226,11 +232,10 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
     };
   };
 
-  const walk = (g, depth) => {
+  const walk = (g, depth, hard) => {
     const sum = total(g.id);
     // Nothing to list: no open tabs, or all of them are pinned.
     if (!sum.listed) return;
-    const hard = !!g.pinned;
     const soft = !hard && sum.pinnedTab;
     const isOpen = !g.collapsed;
     rows.push({
@@ -242,17 +247,24 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       depth,
       top: depth === 0 && rows.length > 0,
       hard,
-      kept: hard || soft,
       fade: hard || soft ? 1 : fadeOf(sum.freshest, auto),
       open: isOpen,
-      pinLabel: hard ? 'Unpin group' : soft ? 'Kept by a pinned tab. Pin group' : 'Pin group',
     });
     if (!isOpen) return;
     (own.get(g.id) || []).filter((t) => !t.pinned)
       .forEach((t) => rows.push(tabRow(t, g.hue, depth, hard)));
-    (kids.get(g.id) || []).forEach((k) => walk(k, depth + 1));
+    (kids.get(g.id) || []).forEach((k) => walk(k, depth + 1, hard));
   };
-  (kids.get(null) || []).forEach((g) => walk(g, 0));
+  const roots = kids.get(null) || [];
+  roots.filter((g) => g.pinned).forEach((g) => walk(g, 0, true));
+  const above = rows.length;
+  roots.filter((g) => !g.pinned).forEach((g) => walk(g, 0, false));
+  // Each side of the line is headed by its name when it has rows. The line
+  // itself is drawn only with something above it.
+  if (rows.length > above || loose.length) {
+    rows.splice(above, 0, { kind: 'section', id: 'below', name: SECTIONS.below, line: above > 0 });
+  }
+  if (above) rows.unshift({ kind: 'section', id: 'above', name: SECTIONS.above });
 
   if (loose.length) {
     rows.push({
@@ -266,10 +278,8 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       depth: 0,
       top: rows.length > 0,
       hard: false,
-      kept: false,
       fade: 1,
       open: true,
-      pinLabel: '',
     });
     loose.forEach((t) => rows.push(tabRow(t, null, 0, false)));
   }

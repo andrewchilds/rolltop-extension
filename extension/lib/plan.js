@@ -10,8 +10,10 @@
 //
 // A group with `manual: true` was named by the user; classifier renames skip it.
 // One with `manualLabel: true` had its label set by the user; renames keep it.
+// Groups above the line (see isHardPinned) are out of a plan's reach: it cannot
+// file tabs into them, nest groups in them, rename them or reuse their names.
 
-import { MAX_DEPTH, chain, childMap } from './model.js';
+import { MAX_DEPTH, chain, childMap, isHardPinned } from './model.js';
 
 const CHILD_HUE_STEPS = [25, -25, 50, -50, 75, -75];
 const SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'ac', 'gov', 'edu']);
@@ -39,7 +41,7 @@ export function siteOf(url) {
 export function heuristicPlan(tabs, groups) {
   const bySite = new Map();
   Object.values(groups).forEach((g) => {
-    if (g.site) bySite.set(g.site, g.id);
+    if (g.site && !isHardPinned(groups, g.id)) bySite.set(g.site, g.id);
   });
   const newGroups = [];
   const assignments = [];
@@ -64,7 +66,7 @@ export function applyPlan(groups, counters, plan, validTabIds) {
   Object.values(groups).forEach((g) => { next[g.id] = { ...g }; });
   const c = { ...counters };
   const refs = new Map();
-  const resolve = (x) => (x && next[x] ? x : refs.get(x) || null);
+  const resolve = (x) => (x && next[x] ? (isHardPinned(next, x) ? null : x) : refs.get(x) || null);
 
   // New groups may name another new group as parent, in any order.
   let pending = (plan.newGroups || []).filter((g) => g && g.ref && clean(g.name, 40));
@@ -85,7 +87,8 @@ export function applyPlan(groups, counters, plan, validTabIds) {
       }
       const name = clean(g.name, 40);
       const twin = Object.values(next).find(
-        (x) => (x.parentId || null) === parentId && x.name.toLowerCase() === name.toLowerCase(),
+        (x) => (x.parentId || null) === parentId && x.name.toLowerCase() === name.toLowerCase()
+          && !isHardPinned(next, x.id),
       );
       if (twin) {
         refs.set(g.ref, twin.id);
@@ -119,7 +122,7 @@ export function applyPlan(groups, counters, plan, validTabIds) {
 
   for (const r of plan.renames || []) {
     const g = r && next[r.groupId];
-    if (!g || g.site || g.manual) continue;
+    if (!g || g.site || g.manual || isHardPinned(next, g.id)) continue;
     const name = clean(r.name, 40);
     if (name) g.name = name;
     const label = clean(r.label, 14);

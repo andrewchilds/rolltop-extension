@@ -220,6 +220,75 @@ test('a group left alone for hours collapses once, until it is visited again', a
   assert.equal(groupOf(bg, 1).collapsed, true);
 });
 
+test('the classifier leaves groups above the line alone', async () => {
+  const seen = [];
+  const ai = async (req) => {
+    seen.push(req);
+    return {
+      newGroups: req.groups.length ? [] : [{ ref: 'n', name: 'Kyoto in spring', label: 'Trip', parent: null }],
+      assignments: req.tabs.map((t) => ({ tabId: t.id, group: req.groups.length ? 'g1' : 'n' })),
+      renames: seen.length > 1 ? [{ groupId: 'g1', name: 'Japan', label: 'Trip' }] : [],
+    };
+  };
+  const { bg, browser } = await boot(
+    [{ id: 1, url: 'https://slowroutes.travel/kyoto' }],
+    { ai, stored: { settings: { apiKey: 'sk-test' } } },
+  );
+  await bg.handle({ type: 'pinGroup', groupId: 'g1' });
+
+  // A tab opened from it: the group is not offered, and naming it anyway fails.
+  await browser.tabs.create({ url: 'https://skycast.net/kyoto', openerTabId: 1 });
+  await tick();
+  await bg.runClassify();
+  const last = seen[seen.length - 1];
+  assert.deepEqual(last.groups, []);
+  assert.equal(last.tabs[0].openerGroupId, null);
+  assert.notEqual(groupOf(bg, 100).id, 'g1');
+  assert.equal(bg.state.groups.g1.name, 'Kyoto in spring');
+
+  // Its own tab stays when it navigates to another site.
+  browser._tabs[0].url = 'https://other.org/';
+  browser.tabs.onUpdated.fire(1, { url: 'https://other.org/', status: 'complete' }, { ...browser._tabs[0] });
+  await tick();
+  await bg.runClassify();
+  assert.equal(groupOf(bg, 1).id, 'g1');
+});
+
+test('a group crosses the line by pin or by drag, taking its sub-groups', async () => {
+  const { bg } = await boot([
+    { id: 1, url: 'https://a.com/' }, { id: 2, url: 'https://b.com/' }, { id: 3, url: 'https://c.com/' },
+  ]);
+  const [a, b, c] = [1, 2, 3].map((id) => bg.assign.get(id).groupId);
+  const g = bg.state.groups;
+  const move = (groupId, targetId, where) => bg.handle({ type: 'moveGroup', groupId, targetId, where });
+  await bg.handle({ type: 'pinGroup', groupId: a });
+  await move(b, a, 'after');
+  assert.equal(g[b].pinned, true, 'dropped beside a pinned group');
+  await move(b, c, 'before');
+  assert.equal(g[b].pinned, false, 'and back below');
+  await move(b, a, 'into');
+  assert.equal(g[b].pinned, false);
+  await bg.handle({ type: 'pinGroup', groupId: b });
+  assert.equal(g[b].pinned, false, 'a sub-group has no pin of its own');
+  await bg.tidy();
+  assert.equal(bg.state.archive.length, 0);
+});
+
+test('a sub-group pinned before the line existed takes its top-level group above it', async () => {
+  const groups = {
+    g1: { id: 'g1', name: 'a.com', label: 'Site', hue: 1, parentId: null, order: 1, site: 'a.com' },
+    g2: { id: 'g2', name: 'Sub', label: 'Other', hue: 2, parentId: 'g1', order: 2, pinned: true },
+  };
+  const browser = fakeBrowser([{ id: 1, url: 'https://a.com/' }], {
+    groups, counters: { nextGroup: 3, topLevel: 1, nextArchive: 1 },
+  });
+  browser._tabValues.set('1tidy', { groupId: 'g2', host: 'a.com' });
+  const bg = createBackground({ browser, now: () => NOW, delay: FAST });
+  await bg.start();
+  assert.equal(bg.state.groups.g1.pinned, true);
+  assert.equal(bg.state.groups.g2.pinned, false);
+});
+
 test('auto-tidy off archives nothing', async () => {
   const { bg, browser } = await boot(
     [{ id: 1, url: 'https://stale.com/', lastAccessed: NOW - 60 * DAY }, { id: 2, url: 'https://b.com/' }],

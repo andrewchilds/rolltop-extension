@@ -46,17 +46,29 @@ test('collapsed groups hide their tabs; archived-only groups are not listed', ()
   assert.equal(group(v, 'Laptop sleeve'), undefined);
 });
 
-test('a pinned group does not pin its sub-groups', () => {
+test('a pinned group sits above the line with its sub-groups', () => {
   const v = view();
   const work = group(v, 'Sidebar redesign');
   assert.equal(work.hard, true);
-  assert.equal(work.pinLabel, 'Unpin group');
   const a11y = group(v, 'Accessibility');
-  assert.equal(a11y.hard, false);
-  assert.equal(a11y.pinLabel, 'Pin group');
+  assert.equal(a11y.hard, true);
   const row = tab(v, 'Tab strip accessibility');
-  assert.ok(row.fade < 1);
-  assert.equal(row.idleLabel, '3d');
+  assert.equal(row.fade, 1);
+  assert.equal(row.idleLabel, '');
+  assert.deepEqual(v.rows.filter((r) => r.kind === 'section').map((r) => [r.name, !!r.line]),
+    [['Pinned', false], ['Browsing', true]]);
+  assert.equal(v.rows[0].kind, 'section');
+  const at = v.rows.findIndex((r) => r.line);
+  assert.equal(v.rows[at + 1].name, 'Read later');
+  assert.ok(v.rows.slice(1, at).every((r) => r.kind === 'tab' || r.hard));
+});
+
+test('pinned groups are listed first, and the line needs something on both sides', () => {
+  const pinTrip = view({}, (snap) => { snap.groups.trip.pinned = true; });
+  assert.deepEqual(pinTrip.rows.filter((r) => r.kind !== 'tab' && !r.depth).map((r) => r.name).slice(0, 5),
+    ['Pinned', 'Sidebar redesign', 'Kyoto in spring', 'Browsing', 'Read later']);
+  const none = view({}, (snap) => { snap.groups.work.pinned = false; });
+  assert.deepEqual(none.rows.filter((r) => r.kind === 'section').map((r) => [r.name, r.line]), [['Browsing', false]]);
 });
 
 test('a pinned tab shows the alert count from its title as a badge', () => {
@@ -93,7 +105,6 @@ test('a pinned tab keeps its group visible without exempting siblings', () => {
   const v = view();
   const trip = group(v, 'Kyoto in spring');
   assert.equal(trip.hard, false);
-  assert.equal(trip.kept, true);
   assert.equal(trip.fade, 1);
   const weather = tab(v, 'Kyoto 10-day');
   assert.equal(weather.idleLabel, '6d');

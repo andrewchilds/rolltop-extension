@@ -7,6 +7,7 @@ const ICONS = {
   chevron: { size: 11, box: 12, width: 1.5, paths: ['M4.5 2.5L8 6l-3.5 3.5'] },
   pin: { size: 14, box: 16, width: 1.4, paths: ['M6 2h4l-.5 4 2 2.5h-7l2-2.5z', 'M8 8.5V14'] },
   close: { size: 12, box: 12, width: 1.5, paths: ['M3 3l6 6M9 3l-6 6'] },
+  more: { size: 14, box: 16, width: 2.2, paths: ['M3.5 8h.01M8 8h.01M12.5 8h.01'] },
 };
 
 function icon(name, { filled = false, cls = '' } = {}) {
@@ -79,7 +80,7 @@ function pinNode(p) {
         'aria-current': p.current ? 'page' : null, data: { act: 'activate', tab: p.tabId },
       }, tile(p, true), el('span', { class: 'pin-title' }, p.title)),
     p.badge == null ? null : el('span', { class: 'badge' + (p.badge ? '' : ' dot'), 'aria-hidden': 'true' }, p.badge),
-    renaming ? null : actBtn('unpinTab', 'Unpin tab', { tab: p.tabId }, icon('pin', { filled: true })),
+    renaming ? null : actBtn('unpinTab', 'Remove from Favorites', { tab: p.tabId }, icon('pin', { filled: true })),
   );
 }
 
@@ -87,8 +88,6 @@ function groupNode(r) {
   const fixed = r.id === UNGROUPED;
   const renaming = editing === r.id;
   const busy = renaming;
-  const pin =actBtn('pinGroup', r.pinLabel, { group: r.id }, icon('pin', { filled: r.hard }), { 'aria-pressed': String(r.hard) });
-  if (r.kept) pin.classList.add('on');
   // Only the arrow opens and closes the group; the rest of the row is left
   // for dragging and for double-clicking to rename. Not a <button>: Firefox
   // does not start a drag from inside one. Inert while renaming.
@@ -114,8 +113,7 @@ function groupNode(r) {
   },
     el('div', { class: 'row-main', title: busy ? null : r.name }, ...parts),
     el('div', { class: 'acts' },
-      fixed ? null : pin,
-      fixed ? null : actBtn('archiveGroup', 'Close group', { group: r.id }, icon('close')),
+      fixed ? null : actBtn('groupMenu', 'Group actions', { group: r.id }, icon('more'), { 'aria-haspopup': 'menu' }),
     ),
   );
 }
@@ -139,7 +137,7 @@ function tabNode(r) {
     r.idleLabel ? el('span', { class: 'meta' }, r.idleLabel) : null,
     // Laid over the end of the title while the row is hovered or focused.
     el('div', { class: 'acts' },
-      actBtn('pinTab', 'Pin tab', { tab: r.tabId }, icon('pin')),
+      actBtn('pinTab', 'Add to Favorites', { tab: r.tabId }, icon('pin')),
       actBtn('closeTab', 'Close tab', { tab: r.tabId }, icon('close')),
     ),
   );
@@ -233,6 +231,7 @@ let pinsSig = null; // the same for the pin grid
 // Rebuilds the list. Rows that are new slide open and rows that went away
 // slide shut in place, which is what opening and closing a group looks like.
 function renderList(rows) {
+  hideGroupMenu(); // its button is about to be replaced
   const list = $('list');
   const scroll = list.scrollTop;
   const animate = motion && list.childElementCount > 0;
@@ -244,8 +243,9 @@ function renderList(rows) {
   const turned = []; // group rows whose chevron should rotate rather than jump
   const nodes = rows.map((r) => {
     const group = r.kind === 'group';
-    const node = group ? groupNode(r) : tabNode(r);
-    const key = group ? 'g:' + r.id : 't:' + r.tabId;
+    const section = r.kind === 'section';
+    const node = section ? el('div', { class: 'section' + (r.line ? ' line' : '') }, r.name) : group ? groupNode(r) : tabNode(r);
+    const key = section ? 's:' + r.id : group ? 'g:' + r.id : 't:' + r.tabId;
     node.dataset.key = key;
     const was = old.get(key);
     if (animate && !was) node.classList.add('enter');
@@ -346,12 +346,80 @@ function searchArchive() {
   if (query.trim()) send('search', { query });
 }
 
+// ---- group menu ------------------------------------------------------------
+// A group row's ellipsis opens the same actions as its right-click menu.
+
+let groupMenu = null; // the menu element, made on first use
+let groupMenuFor = null; // the button it is open for
+
+function showGroupMenu(button) {
+  const g = snap.groups[button.dataset.group];
+  if (!g) return;
+  if (!groupMenu) {
+    groupMenu = el('div', { class: 'menu', role: 'menu', 'aria-label': 'Group actions' });
+    document.body.append(groupMenu);
+  }
+  const item = (act, text) => el('button', { type: 'button', role: 'menuitem', data: { act, group: g.id } }, text);
+  groupMenu.replaceChildren(
+    item('renameGroup', 'Rename'),
+    // Only a top-level group can be pinned; what is nested in it goes with it.
+    g.parentId && snap.groups[g.parentId] ? null : item('pinGroup', g.pinned ? 'Unpin group' : 'Pin group'),
+    item('toggleGroup', g.collapsed ? 'Expand' : 'Collapse'),
+    item('archiveGroup', 'Archive group'),
+  );
+  groupMenu.hidden = false;
+  groupMenuFor = button;
+  button.setAttribute('aria-expanded', 'true');
+  // Under the button, or above it when there is no room below.
+  const rect = button.getBoundingClientRect();
+  const { offsetWidth: width, offsetHeight: height } = groupMenu;
+  const below = rect.bottom + 4;
+  groupMenu.style.top = (below + height > innerHeight - 4 && rect.top - 4 - height >= 4 ? rect.top - 4 - height : below) + 'px';
+  groupMenu.style.left = Math.max(4, Math.min(rect.right - width, innerWidth - width - 4)) + 'px';
+  groupMenu.querySelector('button').focus();
+}
+
+function hideGroupMenu() {
+  if (!groupMenuFor) return;
+  groupMenu.hidden = true;
+  groupMenuFor.removeAttribute('aria-expanded');
+  groupMenuFor = null;
+}
+
+$('list').addEventListener('scroll', hideGroupMenu);
+addEventListener('resize', hideGroupMenu);
+addEventListener('blur', hideGroupMenu);
+document.addEventListener('keydown', (event) => {
+  if (!groupMenuFor) return;
+  const items = [...groupMenu.children];
+  const at = items.indexOf(document.activeElement);
+  if (event.key === 'Escape') {
+    const button = groupMenuFor;
+    hideGroupMenu();
+    if (button.isConnected) button.focus();
+  } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+  } else if (event.key === 'Tab') {
+    hideGroupMenu();
+  }
+});
+
 document.addEventListener('click', (event) => {
   const target = event.target.closest('[data-act]');
-  if (!target || !snap) return;
+  // Any click closes the open menu; one on its own button does only that.
+  const reopening = target && target === groupMenuFor;
+  hideGroupMenu();
+  if (!target || !snap || reopening) return;
   const { act, tab, group, archive } = target.dataset;
   const tabId = tab ? Number(tab) : undefined;
   switch (act) {
+    case 'groupMenu': showGroupMenu(target); return;
+    case 'renameGroup':
+      if (!snap.groups[group]) return;
+      editing = group;
+      editingTab = null;
+      break;
     case 'activate': clearSearch(); send('activate', { tabId }); break;
     case 'closeTab': send('closeTab', { tabId }); break;
     case 'pinTab': send('pinTab', { tabId, pinned: true }); break;
@@ -374,7 +442,7 @@ document.addEventListener('click', (event) => {
 });
 
 // Middle-clicking a tab's row, a pinned tile or a group's row closes it, as
-// the row's own close button would. Open fields keep the default (paste).
+// the tab's close button or the group's Archive would. Open fields keep the default (paste).
 function middleTarget(event) {
   if (event.button !== 1 || !snap || !event.target.closest || event.target.closest('input')) return null;
   return event.target.closest('[data-ctx-tab], [data-ctx-group]');
@@ -643,7 +711,9 @@ browser.menus.onShown.addListener(() => {
   const g = menuTarget.groupId ? snap.groups[menuTarget.groupId] : null;
   const visible = !!g;
   browser.menus.update(MENU.rename, { visible });
-  browser.menus.update(MENU.pinGroup, { visible, title: g && g.pinned ? 'Unpin group' : 'Pin group' });
+  // Only a top-level group can be pinned; what is nested in it goes with it.
+  const top = !!g && !(g.parentId && snap.groups[g.parentId]);
+  browser.menus.update(MENU.pinGroup, { visible: top, title: g && g.pinned ? 'Unpin group' : 'Pin group' });
   browser.menus.update(MENU.toggleGroup, { visible, title: g && g.collapsed ? 'Expand' : 'Collapse' });
   browser.menus.update(MENU.archiveGroup, { visible });
   browser.menus.refresh();

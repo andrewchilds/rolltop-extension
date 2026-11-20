@@ -166,7 +166,9 @@ export function createBackground({
 
   function isFiled(tab) {
     const a = assign.get(tab.id);
-    return !!a && !!state.groups[a.groupId] && (!!a.manual || a.host === hostOf(tab.url));
+    if (!a || !state.groups[a.groupId]) return false;
+    // Above the line a tab stays where it is, wherever it navigates.
+    return !!a.manual || a.host === hostOf(tab.url) || isHardPinned(state.groups, a.groupId);
   }
 
   // Queue a tab if it has no group yet or has navigated to a different site.
@@ -181,6 +183,7 @@ export function createBackground({
   // so request size tracks what is in use, not the size of the archive. Site
   // groups from the fallback are left out so it builds topic groups instead,
   // unless the user renamed one: that makes it a group they mean to keep.
+  // Groups above the line are left out: the classifier has no say there.
   function contextFor(allTabs) {
     const titles = new Map();
     const relevant = new Set();
@@ -201,7 +204,7 @@ export function createBackground({
     });
     const hidden = (g) => !!g.site && !g.manual;
     return Object.values(state.groups)
-      .filter((g) => relevant.has(g.id) && !hidden(g))
+      .filter((g) => relevant.has(g.id) && !hidden(g) && !isHardPinned(state.groups, g.id))
       .map((g) => ({
         id: g.id,
         name: g.name,
@@ -262,12 +265,15 @@ export function createBackground({
             apiKey: state.settings.apiKey,
             model,
             groups: context,
-            tabs: batch.map((t) => ({
-              id: t.id,
-              title: t.title || '',
-              url: t.url,
-              openerGroupId: assign.get(t.openerTabId)?.groupId || null,
-            })),
+            tabs: batch.map((t) => {
+              const from = assign.get(t.openerTabId)?.groupId;
+              return {
+                id: t.id,
+                title: t.title || '',
+                url: t.url,
+                openerGroupId: from && !isHardPinned(state.groups, from) ? from : null,
+              };
+            }),
           });
           status.error = '';
         } catch (e) {
@@ -494,8 +500,9 @@ export function createBackground({
       case 'showGroup':
         if (g) expand(g.id);
         break;
+      // Moves a top-level group across the line, with everything nested in it.
       case 'pinGroup':
-        if (g) g.pinned = !g.pinned;
+        if (g && chain(state.groups, g.id).length === 1) g.pinned = !g.pinned;
         break;
       case 'renameGroup': {
         const name = clean(msg.name, 40);
@@ -535,6 +542,9 @@ export function createBackground({
         }
         g.order = prev && next ? (prev.order + next.order) / 2 : prev ? prev.order + 1 : next ? next.order - 1 : 1;
         g.parentId = parentId;
+        // At the top level it lands on the target's side of the line; nested,
+        // it is on its parent's.
+        g.pinned = parentId == null && !!target.pinned;
         if (into) expand(target.id);
         break;
       }
@@ -637,6 +647,14 @@ export function createBackground({
   async function start() {
     const stored = await browser.storage.local.get(['groups', 'archive', 'settings', 'counters', 'log']);
     state.groups = stored.groups || {};
+    // Pins used to be per group. A pinned sub-group now takes its whole
+    // top-level group above the line, so nothing it protected starts expiring.
+    for (const g of Object.values(state.groups)) {
+      const root = state.groups[chain(state.groups, g.id)[0]];
+      if (!g.pinned || root === g) continue;
+      root.pinned = true;
+      g.pinned = false;
+    }
     state.archive = stored.archive || [];
     state.log = stored.log || [];
     state.settings = { ...DEFAULTS, ...(stored.settings || {}) };

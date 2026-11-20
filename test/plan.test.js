@@ -127,3 +127,26 @@ test('applyPlan leaves a manually renamed group alone but still files tabs into 
   assert.equal(res.groups[gid].label, 'Trip');
   assert.equal(res.assign[2], gid);
 });
+
+test('a plan cannot reach groups above the line', () => {
+  const groups = {
+    g1: { id: 'g1', name: 'Work', label: 'Work', hue: 1, parentId: null, order: 1, pinned: true },
+    g2: { id: 'g2', name: 'Docs', label: 'Work', hue: 2, parentId: 'g1', order: 2 },
+    g3: { id: 'g3', name: 'example.com', label: 'Site', hue: 3, parentId: null, order: 3, pinned: true, site: 'example.com' },
+  };
+  const res = applyPlan(groups, { nextGroup: 4, topLevel: 3, nextArchive: 1 }, {
+    newGroups: [
+      { ref: 'n', name: 'Specs', label: 'Work', parent: 'g1' },
+      { ref: 'w', name: 'work', label: 'Work', parent: null },
+    ],
+    assignments: [{ tabId: 1, group: 'g1' }, { tabId: 2, group: 'g2' }, { tabId: 3, group: 'n' }, { tabId: 4, group: 'w' }],
+    renames: [{ groupId: 'g2', name: 'Documents', label: 'Reading' }],
+  }, new Set([1, 2, 3, 4]));
+  assert.deepEqual(Object.keys(res.assign), ['3', '4']);
+  assert.equal(res.groups[res.assign[3]].parentId, null, 'a new group is not nested above the line');
+  assert.notEqual(res.assign[4], 'g1', 'a name above the line is not reused');
+  assert.equal(res.groups.g2.name, 'Docs');
+
+  const bySite = heuristicPlan([{ id: 5, url: 'https://example.com/a' }], groups);
+  assert.equal(bySite.newGroups.length, 1);
+});

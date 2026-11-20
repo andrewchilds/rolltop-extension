@@ -260,6 +260,16 @@ nav {
 .row:hover, .row:focus-within { opacity: 1 !important; }
 .row.group { height: 32px; }
 .row.group.top { margin-top: 4px; }
+/* The two sides of the line: kept groups above, sorted and expiring ones below. */
+.section {
+  flex: none;
+  padding: 2px 4px 0;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.section.line { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--off); }
 .row.tab { height: 28px; }
 .row.tab.current { background: var(--card); box-shadow: var(--on-shadow); }
 
@@ -362,6 +372,35 @@ nav {
   width: 48px;
   height: 24px;
 }
+.group .acts { width: 24px; }
+.act[aria-expanded="true"] { opacity: 1; background: var(--hover); }
+.menu {
+  position: fixed;
+  z-index: 10;
+  box-sizing: border-box;
+  min-width: 132px;
+  max-width: calc(100vw - 8px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.menu button {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--hover); outline: none; }
 /* A tab's title runs the full width; the actions cover its end while the row
    is hovered or focused, on the row's own background. */
 .tab .acts {
@@ -391,7 +430,7 @@ nav {
   opacity: 0;
 }
 .act:hover { background: var(--hover); }
-.row:hover .act, .row:focus-within .act, .pin:hover .act, .pin:focus-within .act, .act.on { opacity: 1; }
+.row:hover .act, .row:focus-within .act, .pin:hover .act, .pin:focus-within .act { opacity: 1; }
 .meta {
   flex: none;
   padding: 0 7px 0 2px;
