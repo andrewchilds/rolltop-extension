@@ -6,7 +6,6 @@ const SVG = 'http://www.w3.org/2000/svg';
 const ICONS = {
   chevron: { size: 11, box: 12, width: 1.5, paths: ['M4.5 2.5L8 6l-3.5 3.5'] },
   pin: { size: 14, box: 16, width: 1.4, paths: ['M6 2h4l-.5 4 2 2.5h-7l2-2.5z', 'M8 8.5V14'] },
-  archive: { size: 14, box: 16, width: 1.4, paths: ['M2.5 4h11v2.5h-11z', 'M3.5 6.5V13h9V6.5', 'M6.5 9.5h3'] },
   close: { size: 12, box: 12, width: 1.5, paths: ['M3 3l6 6M9 3l-6 6'] },
 };
 
@@ -67,9 +66,10 @@ function pinNode(p) {
   return el('div', {
     class: `pin ${hueClass(p.hue)}${p.current ? ' current' : ''}`, style: hueStyle(p.hue), title: p.title,
     data: { ctxTab: p.tabId },
+    draggable: 'true',
   },
-    el('button', {
-      type: 'button', class: 'pin-main', 'aria-label': p.title,
+    el('div', {
+      class: 'pin-main', role: 'button', tabindex: '0', 'aria-label': p.title,
       'aria-current': p.current ? 'page' : null, data: { act: 'activate', tab: p.tabId },
     }, tile(p, true), el('span', { class: 'pin-title' }, p.title)),
     actBtn('unpinTab', 'Unpin tab', { tab: p.tabId }, icon('pin', { filled: true })),
@@ -105,8 +105,7 @@ function groupNode(r) {
       }, ...parts),
     el('div', { class: 'acts' },
       fixed ? null : pin,
-      fixed ? null : actBtn('archiveGroup', 'Archive group', { group: r.id }, icon('archive')),
-      el('span', { class: 'meta' }, String(r.count)),
+      fixed ? null : actBtn('archiveGroup', 'Close group', { group: r.id }, icon('close')),
     ),
   );
 }
@@ -171,7 +170,7 @@ let query = '';
 let hits = { query: '', tabs: [] }; // archived tabs matching a query, from the background
 let editing = null; // id of the group being renamed in its row
 let menuTarget = null; // what this sidebar's open context menu was opened on
-let drag = null; // the row being dragged: { tabId } or { groupId }
+let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
 let marked = null; // the drop target currently highlighted
 
 function renameInput(r) {
@@ -199,6 +198,62 @@ function finishRename(input, commit) {
   render();
 }
 
+const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+const SLIDE_MS = 200; // matches the row animations in sidebar.css
+let listSig = null; // what the list last rendered, to leave it alone when nothing changed
+
+// Rebuilds the list. Rows that are new slide open and rows that went away
+// slide shut in place, which is what opening and closing a group looks like.
+function renderList(rows) {
+  const list = $('list');
+  const scroll = list.scrollTop;
+  const animate = motion && list.childElementCount > 0;
+  const old = new Map();
+  for (const node of list.children) {
+    if (node.dataset.key) old.set(node.dataset.key, node);
+  }
+  const fresh = new Map();
+  const turned = []; // group rows whose chevron should rotate rather than jump
+  const nodes = rows.map((r) => {
+    const group = r.kind === 'group';
+    const node = group ? groupNode(r) : tabNode(r);
+    const key = group ? 'g:' + r.id : 't:' + r.tabId;
+    node.dataset.key = key;
+    const was = old.get(key);
+    if (animate && !was) node.classList.add('enter');
+    if (animate && was && group && was.classList.contains('open') !== r.open) turned.push(node);
+    fresh.set(key, node);
+    return node;
+  });
+  if (animate) {
+    let at = -1; // index of the last surviving row seen, where leavers are kept
+    for (const node of [...list.children]) {
+      const key = node.dataset.key;
+      if (!key) continue; // already on its way out
+      if (fresh.has(key)) {
+        at = nodes.indexOf(fresh.get(key));
+        continue;
+      }
+      delete node.dataset.key;
+      node.removeAttribute('draggable');
+      node.classList.remove('enter');
+      node.classList.add('exit');
+      node.addEventListener('animationend', () => node.remove());
+      nodes.splice(++at, 0, node);
+    }
+  }
+  list.replaceChildren(...nodes);
+  list.scrollTop = scroll;
+  // The rows are new nodes, so a CSS transition has nothing to start from.
+  for (const node of turned) {
+    const angles = node.classList.contains('open') ? [0, 90] : [90, 0];
+    node.querySelector('.chev').animate(
+      angles.map((deg) => ({ transform: `rotate(${deg}deg)` })),
+      { duration: SLIDE_MS, easing: 'ease-in-out' },
+    );
+  }
+}
+
 function render() {
   if (!snap || windowId == null) return;
   const view = buildView({
@@ -218,13 +273,13 @@ function render() {
   } else {
     const list = $('list');
     $('pins').hidden = !view.pins.length;
-    $('pins').replaceChildren(...view.pins.map(pinNode));
+    // A drag keeps everything in place: its source has to stay in the document.
+    if (!drag) $('pins').replaceChildren(...view.pins.map(pinNode));
     // A rename in progress keeps its row: rebuilding would drop what was typed.
-    // So does a drag: its source row has to stay in the document.
-    if (!drag && (editing == null || !list.querySelector('.rename'))) {
-      const scroll = list.scrollTop;
-      list.replaceChildren(...view.rows.map((r) => (r.kind === 'group' ? groupNode(r) : tabNode(r))));
-      list.scrollTop = scroll;
+    const sig = JSON.stringify([view.rows, editing]);
+    if (!drag && sig !== listSig && (editing == null || !list.querySelector('.rename'))) {
+      listSig = sig;
+      renderList(view.rows);
       const input = list.querySelector('.rename');
       if (input) {
         window.focus();
@@ -262,7 +317,11 @@ document.addEventListener('click', (event) => {
     case 'closeTab': send('closeTab', { tabId }); break;
     case 'pinTab': send('pinTab', { tabId, pinned: true }); break;
     case 'unpinTab': send('pinTab', { tabId, pinned: false }); break;
-    case 'toggleGroup': send('toggleGroup', { groupId: group }); break;
+    case 'toggleGroup':
+      // Shown at once; the background's next snapshot confirms it.
+      if (snap.groups[group]) snap.groups[group].collapsed = !snap.groups[group].collapsed;
+      send('toggleGroup', { groupId: group });
+      break;
     case 'pinGroup': send('pinGroup', { groupId: group }); break;
     case 'archiveGroup': send('archiveGroup', { groupId: group }); break;
     case 'showGroup': clearSearch(); send('showGroup', { groupId: group }); break;
@@ -275,9 +334,10 @@ document.addEventListener('click', (event) => {
   render();
 });
 
-// Rows are divs with a button role (see groupNode), so give them button keys.
+// Rows and pinned tiles are divs with a button role (see groupNode), so give
+// them button keys.
 document.addEventListener('keydown', (event) => {
-  if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('.row-main[role="button"]')) {
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[role="button"]')) {
     event.preventDefault();
     event.target.click();
   }
@@ -286,11 +346,21 @@ document.addEventListener('keydown', (event) => {
 // ---- drag and drop -----------------------------------------------------------
 // A tab dropped on a group joins it; dropped on a tab it also takes the place
 // before or after it. A group dropped on the middle of a group nests in it;
-// on the top or bottom edge it becomes its sibling there.
+// on the top or bottom edge it becomes its sibling there. A pinned tile can
+// be reordered among the pinned tiles.
 
 function dropFor(event) {
-  const row = event.target.closest ? event.target.closest('#list .row') : null;
-  if (!row || !drag || !snap) return null;
+  if (!drag || !snap || !event.target.closest) return null;
+  if (drag.pinId != null) {
+    const pin = event.target.closest('#pins .pin');
+    const nearTabId = pin ? Number(pin.dataset.ctxTab) : drag.pinId;
+    if (nearTabId === drag.pinId) return null;
+    const rect = pin.getBoundingClientRect();
+    const after = (event.clientX - rect.left) / rect.width > 0.5;
+    return { row: pin, where: after ? 'right' : 'left', msg: ['placeTab', { tabId: drag.pinId, nearTabId, after }] };
+  }
+  const row = event.target.closest('#list .row');
+  if (!row) return null;
   const { ctxTab, ctxGroup, ctxIn } = row.dataset;
   const rect = row.getBoundingClientRect();
   const y = (event.clientY - rect.top) / rect.height;
@@ -320,9 +390,10 @@ function markDrop(drop) {
 }
 
 document.addEventListener('dragstart', (event) => {
-  const row = event.target.closest ? event.target.closest('#list .row[draggable]') : null;
+  const row = event.target.closest ? event.target.closest('#list .row[draggable], #pins .pin[draggable]') : null;
   if (!row) return;
-  drag = row.dataset.ctxTab ? { tabId: Number(row.dataset.ctxTab) } : { groupId: row.dataset.ctxGroup };
+  if (row.classList.contains('pin')) drag = { pinId: Number(row.dataset.ctxTab) };
+  else drag = row.dataset.ctxTab ? { tabId: Number(row.dataset.ctxTab) } : { groupId: row.dataset.ctxGroup };
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('application/x-tidy-row', '1'); // Firefox needs some data to start a drag
   row.classList.add('dragging');
@@ -343,6 +414,7 @@ document.addEventListener('drop', (event) => {
 document.addEventListener('dragend', () => {
   markDrop(null);
   drag = null;
+  document.querySelectorAll('.dragging').forEach((node) => node.classList.remove('dragging'));
   render();
 });
 

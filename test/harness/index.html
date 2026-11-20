@@ -11,7 +11,7 @@
   extension runtime. Serve the repo root (python3 -m http.server) and open
   /test/harness/ — add ?q=shopping to see search results, ?edit=trip for a
   group's rename field, ?ctx=<selector> to right-click a row,
-  ?drag=<selector>&over=<selector>&y=0.5 to drag one row over another (add
+  ?drag=<selector>&over=<selector>&y=0.5&x=0.5 to drag one row over another (add
   &drop=1 to drop it). Messages sent to
   the background and browser.menus calls are logged in <html data-log>.
 -->
@@ -74,17 +74,30 @@ if (params.has('ctx')) {
 if (params.has('drag')) {
   await new Promise((r) => setTimeout(r, 50));
   const dataTransfer = new DataTransfer();
-  const fire = (node, type, clientY = 0) =>
-    node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, clientY }));
+  const fire = (node, type, clientY = 0, clientX = 0) =>
+    node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, clientY, clientX }));
   const source = document.querySelector(params.get('drag'));
   const target = document.querySelector(params.get('over'));
   const rect = target.getBoundingClientRect();
   const y = rect.top + rect.height * Number(params.get('y') ?? 0.5);
+  const x = rect.left + rect.width * Number(params.get('x') ?? 0.5);
   fire(source, 'dragstart');
-  fire(target, 'dragover', y);
+  fire(target, 'dragover', y, x);
   if (params.has('drop')) {
-    fire(target, 'drop', y);
+    fire(target, 'drop', y, x);
     fire(source, 'dragend');
+  }
+}
+// ?click=<selector> clicks an element; &freeze=<ms> then holds every running
+// animation at that point so a screenshot can catch it mid-way.
+if (params.has('click')) {
+  await new Promise((r) => setTimeout(r, 50));
+  document.querySelector(params.get('click')).click();
+  const count = (sel) => document.querySelectorAll(sel).length;
+  document.documentElement.dataset.anim = JSON.stringify({ enter: count('.row.enter'), exit: count('.row.exit'), rows: count('#list .row'),
+    chevronTurning: document.getAnimations().filter((x) => x.effect.target.matches('.chev')).length });
+  if (params.has('freeze')) {
+    document.getAnimations().forEach((a) => { a.pause(); a.currentTime = Number(params.get('freeze')); });
   }
 }
 document.documentElement.dataset.log = JSON.stringify({ sent, menuCalls });

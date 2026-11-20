@@ -549,3 +549,32 @@ test('groups can be reordered, nested and un-nested, within the depth limit', as
   await tick();
   assert.equal((await bg.snapshot()).groups[d].parentId, a);
 });
+
+test('a pinned tab can be placed before or after another without changing groups', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://a.com/', pinned: true },
+    { id: 2, url: 'https://b.com/', pinned: true },
+    { id: 3, url: 'https://c.com/', pinned: true },
+  ]);
+  const before = bg.assign.get(3);
+  await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 1, after: false });
+  assert.deepEqual(browser._tabs.map((t) => t.id), [3, 1, 2]);
+  await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 2, after: true });
+  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 2, 3]);
+  await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 3, after: true });
+  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 2, 3]);
+  assert.deepEqual(bg.assign.get(3), before);
+});
+
+test('archiving a group leaves its pinned tabs open', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://example.com/a', pinned: true },
+    { id: 2, url: 'https://example.com/b' },
+    { id: 3, url: 'https://other.org/' },
+  ]);
+  const groupId = bg.assign.get(1).groupId;
+  await bg.handle({ type: 'archiveGroup', groupId });
+  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 3]);
+  assert.deepEqual(bg.state.archive.map((a) => a.url), ['https://example.com/b']);
+  assert.equal(bg.assign.get(1).groupId, groupId);
+});

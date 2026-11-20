@@ -114,3 +114,17 @@ test('search matches domains and reports no results', () => {
   assert.equal(view({ query: 'railnotes' }).tabResults.length, 2);
   assert.equal(view({ query: 'zzzz' }).noResults, true);
 });
+
+test('a group whose open tabs are all pinned is not listed', () => {
+  const snap = mockSnapshot(NOW);
+  // Leave the Kyoto subtree with only its two pinned tabs open.
+  const kyoto = new Set(['trip', 'transit', 'stay']);
+  snap.tabs = snap.tabs.filter((t) => !kyoto.has(t.groupId) || t.pinned);
+  const v = buildView({ ...snap, auto: true, query: '', now: NOW });
+  const listed = v.rows.filter((r) => r.kind === 'group').map((r) => r.id);
+  assert.equal(listed.some((id) => kyoto.has(id)), false);
+  assert.equal(v.pins.length, 4);
+
+  const found = buildView({ ...snap, auto: true, query: 'kyoto', now: NOW });
+  assert.deepEqual(found.groupResults, []);
+});

@@ -139,16 +139,19 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
   const totals = new Map();
   const total = (id) => {
     if (totals.has(id)) return totals.get(id);
-    const sum = { count: 0, freshest: Infinity, pinnedTab: false, archived: archiveCounts[id] || 0 };
+    // `listed` leaves out pinned tabs, which show in the pin grid instead.
+    const sum = { count: 0, listed: 0, freshest: Infinity, pinnedTab: false, archived: archiveCounts[id] || 0 };
     totals.set(id, sum);
     for (const t of own.get(id) || []) {
       sum.count += 1;
       sum.freshest = Math.min(sum.freshest, idleDays(t, now));
       if (t.pinned) sum.pinnedTab = true;
+      else sum.listed += 1;
     }
     for (const k of kids.get(id) || []) {
       const sub = total(k.id);
       sum.count += sub.count;
+      sum.listed += sub.listed;
       sum.freshest = Math.min(sum.freshest, sub.freshest);
       sum.pinnedTab = sum.pinnedTab || sub.pinnedTab;
       sum.archived += sub.archived;
@@ -185,7 +188,8 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
 
   const walk = (g, depth, inherited) => {
     const sum = total(g.id);
-    if (!sum.count) return;
+    // Nothing to list: no open tabs, or all of them are pinned.
+    if (!sum.listed) return;
     const pinnedHere = !!g.pinned;
     const hard = pinnedHere || inherited;
     const soft = !hard && sum.pinnedTab;
@@ -241,7 +245,7 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       .filter((g) => g.name.toLowerCase().includes(q) || g.label.toLowerCase().includes(q))
       .sort((a, b) => a.order - b.order)
       .map((g) => {
-        const { count: live, archived: stored } = total(g.id);
+        const { listed: live, archived: stored } = total(g.id);
         if (!live && !stored) return null;
         return {
           id: g.id,

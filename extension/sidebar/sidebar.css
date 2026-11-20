@@ -74,7 +74,7 @@ body {
   overflow: hidden;
 }
 button { font: inherit; color: inherit; }
-button:focus-visible, input:focus-visible, .row-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:focus-visible, input:focus-visible, .row-main:focus-visible, .pin-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 [hidden] { display: none !important; }
 
 nav {
@@ -141,6 +141,8 @@ nav {
   align-items: center;
   gap: 8px;
   width: 100%;
+  box-sizing: border-box;
+  user-select: none;
   padding: 6px 8px 6px 6px;
   border: 0;
   border-radius: 8px;
@@ -222,7 +224,7 @@ nav {
 .tab .row-main { gap: 8px; padding-right: 4px; }
 .tab.current .row-main { font-weight: 600; }
 
-.chev { flex: none; color: var(--muted); transition: transform 120ms; }
+.chev { flex: none; color: var(--muted); }
 .group.open .chev { transform: rotate(90deg); }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 3px; background: var(--dot); }
 .gname {
@@ -262,7 +264,14 @@ nav {
   outline: 2px solid var(--accent);
   outline-offset: 0;
 }
-.row.dragging { opacity: 0.4 !important; }
+/* Rows slide open and shut as groups expand and collapse. */
+@keyframes row-in { from { height: 0; margin-top: 0; opacity: 0; } }
+@keyframes row-out { to { height: 0; margin-top: 0; opacity: 0; } }
+.row.enter { overflow: hidden; animation: row-in 200ms ease-in-out; }
+.row.exit { overflow: hidden; pointer-events: none; animation: row-out 200ms ease-in-out forwards; }
+.row.dragging, .pin.dragging { opacity: 0.4 !important; }
+.pin.drop-left { box-shadow: -3px 0 0 var(--accent); }
+.pin.drop-right { box-shadow: 3px 0 0 var(--accent); }
 .row.drop-into { background: var(--hover); box-shadow: inset 0 0 0 2px var(--accent); }
 .row.drop-before { box-shadow: 0 -2px 0 var(--accent); }
 .row.drop-after { box-shadow: 0 2px 0 var(--accent); }
@@ -383,5 +392,5 @@ nav {
 .icon-btn:hover { background: var(--hover); }
 
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  * { transition: none !important; animation: none !important; }
 }

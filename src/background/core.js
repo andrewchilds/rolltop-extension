@@ -344,6 +344,15 @@ export function createBackground({
 
   // ---- actions from the sidebar and options page -------------------------
 
+  // Moves a tab to sit just before or after another in the same window.
+  async function placeBeside(tab, nearTabId, after) {
+    const near = await browser.tabs.get(nearTabId);
+    if (near.windowId !== tab.windowId || near.id === tab.id) return;
+    let index = near.index + (after ? 1 : 0);
+    if (tab.index < near.index) index -= 1;
+    if (index !== tab.index) await browser.tabs.move(tab.id, { index });
+  }
+
   async function handle(msg) {
     const g = msg.groupId ? state.groups[msg.groupId] : null;
     switch (msg.type) {
@@ -384,16 +393,13 @@ export function createBackground({
         queue.delete(tab.id);
         expand(g.id);
         // Dropped beside another tab: take that place in the tab strip too.
-        if (msg.nearTabId != null) {
-          const near = await browser.tabs.get(msg.nearTabId);
-          if (near.windowId === tab.windowId) {
-            let index = near.index + (msg.after ? 1 : 0);
-            if (tab.index < near.index) index -= 1;
-            if (index !== tab.index) await browser.tabs.move(tab.id, { index });
-          }
-        }
+        if (msg.nearTabId != null) await placeBeside(tab, msg.nearTabId, msg.after);
         break;
       }
+      // Reordering only, as when a pinned tile is dragged within the pin grid.
+      case 'placeTab':
+        await placeBeside(await browser.tabs.get(msg.tabId), msg.nearTabId, msg.after);
+        break;
       // Drag and drop of a group: beside another group, or into it.
       case 'moveGroup': {
         const target = state.groups[msg.targetId];
@@ -432,7 +438,8 @@ export function createBackground({
         const ids = subtree(state.groups, g.id);
         ids.forEach((id) => { state.groups[id].pinned = false; });
         const tabs = await browser.tabs.query({});
-        await archiveTabs(tabs.filter((t) => ids.includes(assign.get(t.id)?.groupId)));
+        // Pinned tabs stay: they live in the pin grid, not in the group's rows.
+        await archiveTabs(tabs.filter((t) => !t.pinned && ids.includes(assign.get(t.id)?.groupId)));
         break;
       }
       case 'reopenGroup': {
