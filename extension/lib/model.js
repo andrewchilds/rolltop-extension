@@ -26,10 +26,14 @@ export function idleDays(tab, now) {
   return Math.max(0, Math.floor((now - last) / DAY));
 }
 
-// Tabs fade as they go untouched; pinned things never fade.
+// A tab untouched this many days is folded away behind its group's
+// "Show older" row.
+export const OLDER_DAYS = 5;
+
+// Tabs fade as they go untouched, on both sides of the line.
 export function fadeOf(idle, auto) {
   if (!auto || idle < 2) return 1;
-  return idle < 5 ? 0.8 : 0.62;
+  return idle < OLDER_DAYS ? 0.8 : 0.62;
 }
 
 // parentId (or null for top level) -> children in manual order. Built once
@@ -154,7 +158,8 @@ function plural(n) {
 // Turns one window's tabs plus the shared group tree into flat render lists.
 //   archiveCounts: { groupId: number of archived tabs filed directly in it }
 //   archiveHits:   archived tabs matching `query`, fetched from the background
-export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], auto, query, now }) {
+//   older:         ids of the groups whose older tabs are being shown
+export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], older = [], auto, query, now }) {
   const open = [...tabs].sort((a, b) => a.index - b.index);
   const groupOf = (t) => (t.groupId && groups[t.groupId] ? t.groupId : null);
   const hueOf = (gid) => (gid ? groups[gid].hue : null);
@@ -215,7 +220,7 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
   });
 
   const rows = [];
-  const tabRow = (t, hue, depth, hard) => {
+  const tabRow = (t, hue, depth) => {
     const idle = idleDays(t, now);
     return {
       kind: 'tab',
@@ -226,8 +231,8 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       mono: monoOf(shown(t)),
       hue,
       depth,
-      idleLabel: auto && idle >= 2 && !hard ? idle + 'd' : '',
-      fade: hard || t.active ? 1 : fadeOf(idle, auto),
+      idleLabel: auto && idle >= 2 ? idle + 'd' : '',
+      fade: t.active ? 1 : fadeOf(idle, auto),
       current: !!t.active,
     };
   };
@@ -251,8 +256,12 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       open: isOpen,
     });
     if (!isOpen) return;
-    (own.get(g.id) || []).filter((t) => !t.pinned)
-      .forEach((t) => rows.push(tabRow(t, g.hue, depth, hard)));
+    // Tabs left alone for OLDER_DAYS are folded behind a row that shows them.
+    const mine = (own.get(g.id) || []).filter((t) => !t.pinned);
+    const old = auto ? mine.filter((t) => idleDays(t, now) >= OLDER_DAYS) : [];
+    const showing = older.includes(g.id);
+    mine.filter((t) => showing || !old.includes(t)).forEach((t) => rows.push(tabRow(t, g.hue, depth)));
+    if (old.length) rows.push({ kind: 'older', groupId: g.id, count: old.length, open: showing, depth });
     (kids.get(g.id) || []).forEach((k) => walk(k, depth + 1, hard));
   };
   const roots = kids.get(null) || [];
@@ -281,7 +290,7 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       fade: 1,
       open: true,
     });
-    loose.forEach((t) => rows.push(tabRow(t, null, 0, false)));
+    loose.forEach((t) => rows.push(tabRow(t, null, 0)));
   }
 
   let groupResults = [];

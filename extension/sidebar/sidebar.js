@@ -182,6 +182,7 @@ let port = null;
 let query = '';
 let hits = { query: '', tabs: [] }; // archived tabs matching a query, from the background
 let editing = null; // id of the group being renamed in its row
+const older = new Set(); // ids of the groups whose older tabs are being shown
 let editingTab = null; // id of the tab being renamed in its row or pinned tile
 let menuTarget = null; // what this sidebar's open context menu was opened on
 let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
@@ -244,8 +245,14 @@ function renderList(rows) {
   const nodes = rows.map((r) => {
     const group = r.kind === 'group';
     const section = r.kind === 'section';
-    const node = section ? el('div', { class: 'section' + (r.line ? ' line' : '') }, r.name) : group ? groupNode(r) : tabNode(r);
-    const key = section ? 's:' + r.id : group ? 'g:' + r.id : 't:' + r.tabId;
+    const fold = r.kind === 'older';
+    const node = section ? el('div', { class: 'section' + (r.line ? ' line' : '') }, r.name)
+      : fold ? el('button', {
+        type: 'button', class: 'older', style: `margin-left:${22 + r.depth * 14}px`, 'aria-expanded': String(r.open),
+        data: { act: 'toggleOlder', group: r.groupId },
+      }, r.open ? 'Hide older' : `Show ${r.count} older`)
+        : group ? groupNode(r) : tabNode(r);
+    const key = section ? 's:' + r.id : fold ? 'o:' + r.groupId : group ? 'g:' + r.id : 't:' + r.tabId;
     node.dataset.key = key;
     const was = old.get(key);
     if (animate && !was) node.classList.add('enter');
@@ -289,6 +296,7 @@ function render() {
     groups: snap.groups,
     archiveCounts: snap.archiveCounts,
     archiveHits: hits.query === query ? hits.tabs : [],
+    older: [...older],
     auto: snap.auto,
     query,
     now: Date.now(),
@@ -430,6 +438,9 @@ document.addEventListener('click', (event) => {
       send('toggleGroup', { groupId: group });
       break;
     case 'pinGroup': send('pinGroup', { groupId: group }); break;
+    case 'toggleOlder':
+      if (!older.delete(group)) older.add(group);
+      break;
     case 'archiveGroup': send('archiveGroup', { groupId: group }); break;
     case 'showGroup': clearSearch(); send('showGroup', { groupId: group }); break;
     case 'reopenGroup': clearSearch(); send('reopenGroup', { groupId: group }); break;

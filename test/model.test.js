@@ -52,9 +52,11 @@ test('a pinned group sits above the line with its sub-groups', () => {
   assert.equal(work.hard, true);
   const a11y = group(v, 'Accessibility');
   assert.equal(a11y.hard, true);
+  // Pinned tabs fade like any other; the group's own row does not.
   const row = tab(v, 'Tab strip accessibility');
-  assert.equal(row.fade, 1);
-  assert.equal(row.idleLabel, '');
+  assert.equal(row.fade, 0.8);
+  assert.equal(row.idleLabel, '3d');
+  assert.equal(a11y.fade, 1);
   assert.deepEqual(v.rows.filter((r) => r.kind === 'section').map((r) => [r.name, !!r.line]),
     [['Pinned', false], ['Browsing', true]]);
   assert.equal(v.rows[0].kind, 'section');
@@ -65,7 +67,7 @@ test('a pinned group sits above the line with its sub-groups', () => {
 
 test('pinned groups are listed first, and the line needs something on both sides', () => {
   const pinTrip = view({}, (snap) => { snap.groups.trip.pinned = true; });
-  assert.deepEqual(pinTrip.rows.filter((r) => r.kind !== 'tab' && !r.depth).map((r) => r.name).slice(0, 5),
+  assert.deepEqual(pinTrip.rows.filter((r) => (r.kind === 'group' || r.kind === 'section') && !r.depth).map((r) => r.name).slice(0, 5),
     ['Pinned', 'Sidebar redesign', 'Kyoto in spring', 'Browsing', 'Read later']);
   const none = view({}, (snap) => { snap.groups.work.pinned = false; });
   assert.deepEqual(none.rows.filter((r) => r.kind === 'section').map((r) => [r.name, r.line]), [['Browsing', false]]);
@@ -106,9 +108,25 @@ test('a pinned tab keeps its group visible without exempting siblings', () => {
   const trip = group(v, 'Kyoto in spring');
   assert.equal(trip.hard, false);
   assert.equal(trip.fade, 1);
-  const weather = tab(v, 'Kyoto 10-day');
+  assert.equal(tab(v, 'Kyoto 10-day'), undefined, 'folded with the older tabs');
+});
+
+test('tabs untouched for five days fold behind a row that shows them', () => {
+  const folded = view();
+  const at = folded.rows.findIndex((r) => r.kind === 'older' && r.groupId === 'trip');
+  assert.deepEqual({ ...folded.rows[at] }, { kind: 'older', groupId: 'trip', count: 1, open: false, depth: 0 });
+  assert.equal(folded.rows[at + 1].kind, 'group', 'after the group\'s own tabs, before its sub-groups');
+  assert.equal(group(folded, 'Kyoto in spring').count, 6);
+
+  const shown = view({ older: ['trip'] });
+  const weather = tab(shown, 'Kyoto 10-day');
   assert.equal(weather.idleLabel, '6d');
   assert.equal(weather.fade, 0.62);
+  assert.equal(shown.rows.find((r) => r.kind === 'older' && r.groupId === 'trip').open, true);
+
+  const off = view({ auto: false });
+  assert.equal(off.rows.some((r) => r.kind === 'older'), false);
+  assert.ok(tab(off, 'Kyoto 10-day'));
 });
 
 test('idle tabs fade in two steps and groups fade by their freshest tab', () => {
