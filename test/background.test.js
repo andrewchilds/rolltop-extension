@@ -36,7 +36,7 @@ function fakeBrowser(initialTabs = [], stored = {}) {
       create: async (props) => {
         const tab = {
           id: nextId++, windowId: props.windowId ?? 1, index: tabs.length, status: 'complete',
-          pinned: false, active: !!props.active, lastAccessed: NOW,
+          pinned: !!props.pinned, active: !!props.active, lastAccessed: NOW,
           url: props.url || 'about:newtab', title: props.url || 'New Tab',
         };
         tabs.push(tab);
@@ -70,6 +70,7 @@ function fakeBrowser(initialTabs = [], stored = {}) {
     sessions: {
       setTabValue: async (id, key, value) => { tabValues.set(id + key, value); },
       getTabValue: async (id, key) => tabValues.get(id + key),
+      removeTabValue: async (id, key) => { tabValues.delete(id + key); },
     },
     storage: {
       local: {
@@ -564,6 +565,96 @@ test('a pinned tab can be placed before or after another without changing groups
   await bg.handle({ type: 'placeTab', tabId: 3, nearTabId: 3, after: true });
   assert.deepEqual(browser._tabs.map((t) => t.id), [1, 2, 3]);
   assert.deepEqual(bg.assign.get(3), before);
+});
+
+test('a tab dropped on a pinned tile is pinned beside it', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://a.com/', pinned: true },
+    { id: 2, url: 'https://b.com/', pinned: true },
+    { id: 3, url: 'https://c.com/' },
+    { id: 4, url: 'https://d.com/' },
+  ]);
+  await bg.handle({ type: 'pinTab', tabId: 4, pinned: true, nearTabId: 2, after: false });
+  assert.deepEqual(browser._tabs.map((t) => t.id), [1, 4, 2, 3]);
+  assert.equal(browser._tabs[1].pinned, true);
+  await bg.handle({ type: 'pinTab', tabId: 3, pinned: true });
+  assert.deepEqual(browser._tabs.filter((t) => t.pinned).map((t) => t.id), [1, 4, 2, 3]);
+});
+
+test('a renamed tab shows its new title until the name is cleared, and keeps it through the archive', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://a.com/', title: 'Page A' },
+    { id: 2, url: 'https://b.com/', title: 'Page B' },
+  ]);
+  const nameOf = async (id) => (await bg.snapshot()).tabs.find((t) => t.id === id).name;
+  await bg.handle({ type: 'renameTab', tabId: 1, name: '  My   notes ' });
+  assert.equal(await nameOf(1), 'My notes');
+  assert.equal((await bg.snapshot()).tabs[0].title, 'Page A');
+  assert.equal(await nameOf(2), '');
+
+  await bg.handle({ type: 'closeTab', tabId: 1 });
+  const rec = bg.state.archive[0];
+  assert.equal(rec.title, 'Page A');
+  await bg.handle({ type: 'reopenTab', archiveId: rec.id, windowId: 1 });
+  const reopened = browser._tabs.find((t) => t.url === 'https://a.com/');
+  assert.equal(await nameOf(reopened.id), 'My notes');
+
+  await bg.handle({ type: 'renameTab', tabId: reopened.id, name: ' ' });
+  assert.equal(await nameOf(reopened.id), '');
+});
+
+test('each sorting run is logged with where tabs went and why', async () => {
+  const ai = async ({ tabs }) => ({
+    newGroups: [{ ref: 'n', name: 'Kyoto in spring', label: 'Trip', parent: null }],
+    assignments: [{ tabId: tabs[0].id, group: 'n', reason: 'A trip plan; nothing existing fits.' }],
+    renames: [],
+  });
+  const { bg, browser } = await boot(
+    [{ id: 1, url: 'https://slowroutes.travel/kyoto?x=1', title: 'Kyoto route' }, { id: 2, url: 'https://b.com/', title: 'B' }],
+    { ai, stored: { settings: { apiKey: 'sk-test' } } },
+  );
+  const [entry] = bg.state.log;
+  assert.equal(entry.model, 'claude-opus-5-5');
+  assert.deepEqual(entry.tabs.map((t) => [t.url, t.by, t.group, t.created, t.reason]), [
+    ['slowroutes.travel/kyoto', 'ai', 'Kyoto in spring', true, 'A trip plan; nothing existing fits.'],
+    ['b.com/', 'site', 'b.com', true, ''],
+  ]);
+  await tick();
+  assert.equal(browser._storage.log.length, 1);
+  await bg.handle({ type: 'clearLog' });
+  assert.deepEqual(bg.state.log, []);
+});
+
+test('a site group the user renamed is shown to the AI; an untouched one is not', async () => {
+  let shown = [];
+  let on = false;
+  const ai = async ({ groups, tabs }) => {
+    if (!on) throw new Error('offline');
+    shown = groups;
+    return { newGroups: [], assignments: tabs.map((t) => ({ tabId: t.id, group: groups[0].id, reason: '' })), renames: [] };
+  };
+  const { bg, browser } = await boot(
+    [{ id: 1, url: 'https://pennant.cards/a', title: 'A' }, { id: 2, url: 'https://other.org/', title: 'O' }],
+    { ai, stored: { settings: { apiKey: 'sk-test' } } },
+  );
+  const pennant = bg.assign.get(1).groupId;
+  assert.equal(bg.state.groups[pennant].site, 'pennant.cards');
+  assert.equal(bg.state.log[0].error, 'offline');
+  await bg.handle({ type: 'renameGroup', groupId: pennant, name: 'Pennant' });
+
+  on = true;
+  await browser.tabs.create({ url: 'https://pennant.cards/schedule' });
+  await tick();
+  await bg.runClassify();
+  assert.deepEqual(shown.map((g) => g.name), ['Pennant']);
+  assert.equal(bg.assign.get(100).groupId, pennant);
+  assert.equal(bg.state.log[0].tabs[0].created, false);
+});
+
+test('a new tab can be opened pinned', async () => {
+  const { bg, browser } = await boot([{ id: 1, url: 'https://a.com/', pinned: true }]);
+  await bg.handle({ type: 'newTab', windowId: 1, pinned: true });
+  assert.deepEqual(browser._tabs.map((t) => t.pinned), [true, true]);
 });
 
 test('archiving a group leaves its pinned tabs open', async () => {

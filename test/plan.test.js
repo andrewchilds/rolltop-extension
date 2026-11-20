@@ -106,10 +106,10 @@ test('AI payload strips query strings and maps tab keys back to ids', () => {
   ]);
   const plan = toPlan({
     new_groups: [],
-    assignments: [{ tab: 't1', group: 'g2' }, { tab: 't9', group: 'g2' }],
+    assignments: [{ tab: 't1', group: 'g2', reason: 'Mail belongs with mail.' }, { tab: 't9', group: 'g2', reason: '' }],
     renames: [],
   }, keys);
-  assert.deepEqual(plan.assignments, [{ tabId: 41, group: 'g2' }]);
+  assert.deepEqual(plan.assignments, [{ tabId: 41, group: 'g2', reason: 'Mail belongs with mail.' }]);
 });
 
 test('applyPlan leaves a manually renamed group alone but still files tabs into it', () => {

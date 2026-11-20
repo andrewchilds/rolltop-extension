@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildView, UNGROUPED } from '../extension/lib/model.js';
+import { alertOf, buildView, UNGROUPED } from '../extension/lib/model.js';
 import { mockArchive, mockSnapshot } from './fixture.js';
 
 const NOW = 1_800_000_000_000;
@@ -46,14 +46,47 @@ test('collapsed groups hide their tabs; archived-only groups are not listed', ()
   assert.equal(group(v, 'Laptop sleeve'), undefined);
 });
 
-test('a pinned group keeps its subtree from fading or showing idle age', () => {
+test('a pinned group does not pin its sub-groups', () => {
   const v = view();
+  const work = group(v, 'Sidebar redesign');
+  assert.equal(work.hard, true);
+  assert.equal(work.pinLabel, 'Unpin group');
   const a11y = group(v, 'Accessibility');
-  assert.equal(a11y.hard, true);
-  assert.equal(a11y.pinLabel, 'Pinned with its parent group');
+  assert.equal(a11y.hard, false);
+  assert.equal(a11y.pinLabel, 'Pin group');
   const row = tab(v, 'Tab strip accessibility');
-  assert.equal(row.fade, 1);
-  assert.equal(row.idleLabel, '');
+  assert.ok(row.fade < 1);
+  assert.equal(row.idleLabel, '3d');
+});
+
+test('a pinned tab shows the alert count from its title as a badge', () => {
+  assert.deepEqual(alertOf('(3) Inbox'), { count: '3', title: 'Inbox' });
+  assert.deepEqual(alertOf('[12] Team chat'), { count: '12', title: 'Team chat' });
+  assert.deepEqual(alertOf('Inbox (1,204) - Mail'), { count: '1,204', title: 'Inbox - Mail' });
+  assert.equal(alertOf('Blade Runner (1982) - Films').count, '');
+  assert.equal(alertOf('Report (2).pdf').count, '');
+  assert.equal(alertOf('(0) Inbox').count, '');
+
+  const v = view({}, (snap) => {
+    const [first, second, third] = snap.tabs.filter((t) => t.pinned);
+    first.title = '(2) ' + first.title;
+    first.name = 'Board';
+    second.attention = true;
+    third.title = '(5) ' + third.title;
+  });
+  assert.deepEqual([v.pins[0].title, v.pins[0].badge], ['Board', '2']);
+  assert.equal(v.pins[1].badge, '');
+  assert.deepEqual([v.pins[2].title, v.pins[2].badge], ['Five slow days in Kyoto: a walking route', '5']);
+  assert.equal(v.pins[3].badge, null);
+});
+
+test('a renamed tab is listed under its new name and found by either', () => {
+  const at = (query) => view({ query }, (snap) => {
+    snap.tabs.find((x) => x.title === 'Design review notes, Nov 17').name = 'Review';
+  });
+  assert.ok(at('').rows.some((r) => r.kind === 'tab' && r.title === 'Review'));
+  assert.deepEqual(at('design review').tabResults.map((r) => r.title), ['Review']);
+  assert.deepEqual(at('review').tabResults.map((r) => r.title), ['Review']);
 });
 
 test('a pinned tab keeps its group visible without exempting siblings', () => {

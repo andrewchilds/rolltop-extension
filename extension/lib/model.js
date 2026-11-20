@@ -87,9 +87,25 @@ export function pathName(groups, id) {
   return chain(groups, id).map((x) => groups[x].name).join(' / ');
 }
 
+// A group's pin covers its own tabs only; sub-groups are pinned separately.
 export function isHardPinned(groups, id) {
-  return chain(groups, id).some((x) => groups[x].pinned);
+  return !!groups[id]?.pinned;
 }
+
+// The unread count a page puts in its title, as in "(3) Inbox", "[2] Chat" or
+// "Inbox (1,204) - Mail". Returns the count as text and the title without it.
+const ALERT_LEAD = /^\s*[([](\d{1,4}\+?)[)\]]\s*/;
+const ALERT_MID = /\s*\((\d{1,3}(?:,\d{3})*\+?)\)(?=\s+[-–—|·]\s|\s*$)/;
+export function alertOf(title) {
+  const text = title || '';
+  const m = ALERT_LEAD.exec(text) || ALERT_MID.exec(text);
+  if (!m || /^0+$/.test(m[1])) return { count: '', title: text };
+  return { count: m[1], title: (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim() };
+}
+
+// What a tab is called: the name the user gave it, else the page's title.
+const shown = (t) => t.name || t.title || t.url;
+const searchText = (t) => `${t.name || ''} ${t.title || ''}`;
 
 export function monoOf(title) {
   const ch = (title || '').trim().charAt(0);
@@ -159,14 +175,21 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
     return sum;
   };
 
-  const pins = open.filter((t) => t.pinned).map((t) => ({
-    tabId: t.id,
-    title: t.title || t.url,
-    favIconUrl: t.favIconUrl || '',
-    mono: monoOf(t.title),
-    hue: hueOf(groupOf(t)),
-    current: !!t.active,
-  }));
+  const pins = open.filter((t) => t.pinned).map((t) => {
+    // The count moves from the title to a badge. A tab asking for attention
+    // without a count gets a bare badge ('').
+    const alert = alertOf(t.title);
+    const title = t.name || alert.title || t.url;
+    return {
+      tabId: t.id,
+      title,
+      favIconUrl: t.favIconUrl || '',
+      mono: monoOf(title),
+      hue: hueOf(groupOf(t)),
+      current: !!t.active,
+      badge: alert.count || (t.attention ? '' : null),
+    };
+  });
 
   const rows = [];
   const tabRow = (t, hue, depth, hard) => {
@@ -175,9 +198,9 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       kind: 'tab',
       tabId: t.id,
       groupId: groupOf(t),
-      title: t.title || t.url,
+      title: shown(t),
       favIconUrl: t.favIconUrl || '',
-      mono: monoOf(t.title),
+      mono: monoOf(shown(t)),
       hue,
       depth,
       idleLabel: auto && idle >= 2 && !hard ? idle + 'd' : '',
@@ -186,12 +209,11 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
     };
   };
 
-  const walk = (g, depth, inherited) => {
+  const walk = (g, depth) => {
     const sum = total(g.id);
     // Nothing to list: no open tabs, or all of them are pinned.
     if (!sum.listed) return;
-    const pinnedHere = !!g.pinned;
-    const hard = pinnedHere || inherited;
+    const hard = !!g.pinned;
     const soft = !hard && sum.pinnedTab;
     const isOpen = !g.collapsed;
     rows.push({
@@ -207,16 +229,14 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       kept: hard || soft,
       fade: hard || soft ? 1 : fadeOf(sum.freshest, auto),
       open: isOpen,
-      pinLabel: inherited && !pinnedHere
-        ? 'Pinned with its parent group'
-        : pinnedHere ? 'Unpin group' : soft ? 'Kept by a pinned tab. Pin group' : 'Pin group',
+      pinLabel: hard ? 'Unpin group' : soft ? 'Kept by a pinned tab. Pin group' : 'Pin group',
     });
     if (!isOpen) return;
     (own.get(g.id) || []).filter((t) => !t.pinned)
       .forEach((t) => rows.push(tabRow(t, g.hue, depth, hard)));
-    (kids.get(g.id) || []).forEach((k) => walk(k, depth + 1, hard));
+    (kids.get(g.id) || []).forEach((k) => walk(k, depth + 1));
   };
-  (kids.get(null) || []).forEach((g) => walk(g, 0, false));
+  (kids.get(null) || []).forEach((g) => walk(g, 0));
 
   if (loose.length) {
     rows.push({
@@ -260,19 +280,19 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
       .filter(Boolean);
 
     tabResults = [
-      ...open.filter((t) => matchesQuery(t.title, t.url, q)).map((t) => ({
+      ...open.filter((t) => matchesQuery(searchText(t), t.url, q)).map((t) => ({
         tabId: t.id,
-        title: t.title || t.url,
+        title: shown(t),
         favIconUrl: t.favIconUrl || '',
-        mono: monoOf(t.title),
+        mono: monoOf(shown(t)),
         hue: hueOf(groupOf(t)),
         tag: groupOf(t) ? groups[groupOf(t)].name : 'Ungrouped',
       })),
       ...archiveHits.map((a) => ({
         archiveId: a.id,
-        title: a.title || a.url,
+        title: shown(a),
         favIconUrl: a.favIconUrl || '',
-        mono: monoOf(a.title),
+        mono: monoOf(shown(a)),
         hue: a.groupId && groups[a.groupId] ? groups[a.groupId].hue : null,
         tag: 'Archived',
       })),

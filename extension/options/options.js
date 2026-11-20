@@ -38,4 +38,58 @@ $('resort').addEventListener('click', async () => {
   $('status').textContent = 'Done.';
 });
 
+// ---- sorting log ---------------------------------------------------------
+
+function node(tag, cls, ...children) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  n.append(...children.filter((c) => c != null && c !== ''));
+  return n;
+}
+
+function logEntry(e, open) {
+  const how = e.model ? (e.error ? `${e.model}, failed` : e.model) : 'by site, no API key';
+  const tabs = e.tabs.map((t) => {
+    const where = !t.by
+      ? 'Not filed (the tab closed or was moved by hand first)'
+      : `${t.created ? 'New group' : 'Existing group'}: ${t.group}${t.by === 'site' ? ' (by site)' : ''}`;
+    return node('li', '',
+      t.title || t.url,
+      node('span', 'sub', t.url + (t.openedFrom ? ` · opened from ${t.openedFrom}` : '')),
+      node('span', 'to', where),
+      t.reason ? node('span', 'sub', t.reason) : null,
+    );
+  });
+  const shown = node('details', '',
+    node('summary', '', `Groups the model was shown (${e.groups.length})`),
+    node('ul', '', ...e.groups.map((g) => node('li', '',
+      `${g.name} · ${g.label}`,
+      node('span', 'sub', g.titles.length ? g.titles.join(' | ') : 'No tab titles'),
+    ))),
+  );
+  const details = node('details', '',
+    node('summary', '', `${new Date(e.at).toLocaleString()} · ${e.tabs.length} ${e.tabs.length === 1 ? 'tab' : 'tabs'} · ${how}`),
+    e.error ? node('p', 'err', e.error) : null,
+    node('ul', '', ...tabs),
+    ...e.renames.map((r) => node('p', 'sub', `Renamed group "${r.from}" to "${r.to}"`)),
+    e.model ? shown : null,
+  );
+  details.open = open;
+  return details;
+}
+
+async function loadLog() {
+  const { log } = await browser.storage.local.get('log');
+  const entries = log || [];
+  $('log').replaceChildren(...(entries.length
+    ? entries.map((e, i) => logEntry(e, i === 0))
+    : [node('p', 'hint', 'Nothing sorted yet.')]));
+}
+
+$('clearLog').addEventListener('click', () => browser.runtime.sendMessage({ type: 'clearLog' }));
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.log) loadLog();
+});
+
 load();
+loadLog();

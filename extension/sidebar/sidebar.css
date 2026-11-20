@@ -20,6 +20,7 @@
   --card: #FFFFFF;
   --border: #DADDE3;
   --accent: #2F4FB5;
+  --alert: #E8431F;
   --off: #8A909C;
   --hover: rgba(21, 23, 28, 0.08);
   --pin-bg: rgba(21, 23, 28, 0.04);
@@ -74,7 +75,7 @@ body {
   overflow: hidden;
 }
 button { font: inherit; color: inherit; }
-button:focus-visible, input:focus-visible, .row-main:focus-visible, .pin-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:focus-visible, input:focus-visible, .row-main:focus-visible, .pin-main:focus-visible, .twist:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 [hidden] { display: none !important; }
 
 nav {
@@ -135,7 +136,8 @@ nav {
   border-radius: 8px;
   background: var(--pin-bg);
 }
-.pin.current { background: var(--card); box-shadow: var(--on-shadow); }
+/* The active tile is raised and ringed in its group's color. */
+.pin.current { background: var(--card); box-shadow: inset 0 0 0 1.5px var(--dot), 0 1px 4px rgba(0, 0, 0, 0.14); }
 .pin-main {
   display: flex;
   align-items: center;
@@ -161,6 +163,39 @@ nav {
 .pin.current .pin-title { font-weight: 600; }
 .pin .act { position: absolute; top: 8px; right: 5px; background: var(--pin-bg); }
 .pin.current .act { background: var(--card); }
+/* Alert count, on the corner of the favicon tile. */
+.pin .badge {
+  position: absolute;
+  top: 2px;
+  left: 24px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: var(--alert);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+.pin .badge.dot { top: 4px; left: 28px; min-width: 8px; width: 8px; height: 8px; padding: 0; }
+.pin-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--pin-bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.pin-add:only-child { grid-column: 1 / -1; }
+.pin-add:hover { background: var(--hover); color: var(--fg); }
 
 /* Favicon tile, tinted with the group color */
 .tile {
@@ -219,8 +254,19 @@ nav {
   text-align: left;
   user-select: none;
 }
-.group .row-main { gap: 7px; padding: 0 4px; }
-.group.static .row-main { cursor: default; }
+.group .row-main { gap: 7px; padding: 0 4px; cursor: default; }
+/* The arrow's hit area: the row's full height, out to the row's edge and the dot. */
+.twist {
+  flex: none;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  margin: 0 -6px 0 -4px;
+  padding: 0 6px 0 4px;
+  border-radius: 6px;
+}
+.twist[role] { cursor: pointer; }
+.twist[role]:hover .chev { color: var(--fg); }
 .tab .row-main { gap: 8px; padding-right: 4px; }
 .tab.current .row-main { font-weight: 600; }
 
@@ -246,7 +292,10 @@ nav {
   background: var(--tint);
   color: var(--ink);
 }
-.group.editing .row-main { cursor: default; }
+.group.editing .row-main, .tab.editing .row-main, .pin.editing .pin-main { cursor: default; }
+.tab .rename, .pin .rename { font-family: inherit; font-weight: inherit; font-size: inherit; }
+.tab .rename { height: 22px; }
+.pin .rename { font-size: 12px; font-weight: 500; }
 .rename {
   flex: 1;
   min-width: 0;
@@ -270,11 +319,22 @@ nav {
 .row.enter { overflow: hidden; animation: row-in 200ms ease-in-out; }
 .row.exit { overflow: hidden; pointer-events: none; animation: row-out 200ms ease-in-out forwards; }
 .row.dragging, .pin.dragging { opacity: 0.4 !important; }
-.pin.drop-left { box-shadow: -3px 0 0 var(--accent); }
-.pin.drop-right { box-shadow: 3px 0 0 var(--accent); }
+/* Insertion lines are their own boxes: a shadow would bend around the corners. */
+.row.drop-before, .row.drop-after { position: relative; }
+.row.drop-before::after, .row.drop-after::after, .pin.drop-left::after, .pin.drop-right::after {
+  content: "";
+  position: absolute;
+  background: var(--accent);
+  pointer-events: none;
+}
+.pin.drop-left::after, .pin.drop-right::after { top: 0; bottom: 0; width: 3px; }
+.pin.drop-left::after { left: -3px; }
+.pin.drop-right::after { right: -3px; }
+.row.drop-before::after, .row.drop-after::after { left: 0; right: 0; height: 2px; }
+.row.drop-before::after { top: -2px; }
+.row.drop-after::after { bottom: -2px; }
+.pin-add.drop-into { background: var(--hover); box-shadow: inset 0 0 0 2px var(--accent); }
 .row.drop-into { background: var(--hover); box-shadow: inset 0 0 0 2px var(--accent); }
-.row.drop-before { box-shadow: 0 -2px 0 var(--accent); }
-.row.drop-after { box-shadow: 0 2px 0 var(--accent); }
 .ttitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Hover actions share their slot with the count or idle age. */
@@ -390,6 +450,7 @@ nav {
   cursor: pointer;
 }
 .icon-btn:hover { background: var(--hover); }
+.footer .icon-btn { flex: 1; width: auto; height: 40px; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

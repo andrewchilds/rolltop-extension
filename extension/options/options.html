@@ -17,6 +17,17 @@
   input[type="number"] { width: 90px; }
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
   button { font: inherit; padding: 6px 14px; cursor: pointer; }
+  .log-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 28px; }
+  .log-head h2 { margin: 0; }
+  .log-head button { padding: 2px 10px; font-size: 13px; }
+  #log details { border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent); padding: 6px 0; }
+  #log summary { cursor: pointer; }
+  #log .err { color: #C2371B; }
+  #log ul { margin: 6px 0; padding-left: 18px; }
+  #log li { margin: 0 0 8px; }
+  #log .sub { display: block; font-size: 13px; opacity: 0.75; overflow-wrap: anywhere; }
+  #log .to { font-weight: 600; }
+  #log details details { border: 0; padding: 0 0 0 18px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -42,6 +53,13 @@
     <span id="status" role="status" class="hint"></span>
   </div>
 </form>
+
+<div class="log-head">
+  <h2>Sorting log</h2>
+  <button type="button" id="clearLog">Clear</button>
+</div>
+<p class="hint">The last 20 sorting runs: the tabs that needed a group, where each went and why, and the groups the model was shown. Kept on this computer only.</p>
+<div id="log"></div>
 <script src="options.js"></script>
 </body>
 </html>

@@ -20,7 +20,7 @@ Naming:
 
 Output:
 - "new_groups": groups to create. "ref" is any id you invent that is not an existing group id. "parent" is an existing group id, the ref of another new group, or null for a top-level group.
-- "assignments": one entry per tab in the batch. "group" is an existing group id or a new group's ref.
+- "assignments": one entry per tab in the batch. "group" is an existing group id or a new group's ref. "reason" is one short sentence on why the tab goes there; when it goes in a new group, say why no existing group fit.
 - "renames": existing groups to rename, usually empty.`;
 
 const SCHEMA = {
@@ -47,8 +47,8 @@ const SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['tab', 'group'],
-        properties: { tab: { type: 'string' }, group: { type: 'string' } },
+        required: ['tab', 'group', 'reason'],
+        properties: { tab: { type: 'string' }, group: { type: 'string' }, reason: { type: 'string' } },
       },
     },
     renames: {
@@ -117,7 +117,7 @@ export function toPlan(output, keys) {
     })),
     assignments: (output.assignments || [])
       .filter((a) => keys.has(a.tab))
-      .map((a) => ({ tabId: keys.get(a.tab), group: a.group })),
+      .map((a) => ({ tabId: keys.get(a.tab), group: a.group, reason: a.reason || '' })),
     renames: (output.renames || []).map((r) => ({
       groupId: r.group, name: r.name, label: r.label,
     })),

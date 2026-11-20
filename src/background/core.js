@@ -11,13 +11,22 @@ export const DEFAULTS = { auto: true, archiveDays: 14, apiKey: '', model: 'claud
 const ARCHIVE_CAP = 1000;
 const BATCH = 40;
 const SEARCH_LIMIT = 50;
+const LOG_CAP = 20; // sorting runs kept for the options page
 // Archived groups older than this stay searchable but are not shown to the AI.
 const AI_RECENT = 30 * DAY;
 const TAB_KEY = 'tidy';
+const NAME_KEY = 'tidy-name';
 
 const isSortable = (tab) => /^https?:/.test(tab.url || '') && !tab.incognito;
 const hostOf = (url) => {
   try { return new URL(url).hostname; } catch { return ''; }
+};
+// As sent to the classifier: no query string or fragment.
+const logUrl = (url) => {
+  try {
+    const u = new URL(url);
+    return (u.hostname + u.pathname).slice(0, 140);
+  } catch { return ''; }
 };
 
 export function createBackground({
@@ -29,12 +38,14 @@ export function createBackground({
   const state = {
     groups: {},
     archive: [],
+    log: [],
     settings: { ...DEFAULTS },
     counters: { nextGroup: 1, topLevel: 0, nextArchive: 1 },
   };
   // tabId -> { groupId, host, manual? }. `manual` marks a tab the user filed by
   // hand; the classifier leaves it where it is, even after it navigates.
   const assign = new Map();
+  const names = new Map(); // tabId -> the title the user gave the tab, shown in place of the page's
   const queue = new Set(); // tabIds waiting for a classifier run
   const seen = new Map(); // tabId -> last known tab, since onRemoved only gives an id
   const archiving = new Set(); // tabIds being closed by archiveTabs
@@ -59,6 +70,7 @@ export function createBackground({
       groups: state.groups,
       archive: state.archive,
       counters: state.counters,
+      log: state.log,
     });
   }, delay.save);
 
@@ -67,6 +79,16 @@ export function createBackground({
     assign.set(tabId, value);
     // Stored with the tab in the session, so groups survive a restart.
     browser.sessions.setTabValue(tabId, TAB_KEY, value).catch(() => {});
+  }
+
+  function setName(tabId, name) {
+    if (name) {
+      names.set(tabId, name);
+      browser.sessions.setTabValue(tabId, NAME_KEY, name).catch(() => {});
+    } else {
+      names.delete(tabId);
+      browser.sessions.removeTabValue(tabId, NAME_KEY).catch(() => {});
+    }
   }
 
   function gc() {
@@ -95,10 +117,12 @@ export function createBackground({
           windowId: t.windowId,
           index: t.index,
           title: t.title || '',
+          name: names.get(t.id) || '',
           url: t.url || '',
           favIconUrl: t.favIconUrl || '',
           pinned: !!t.pinned,
           active: !!t.active,
+          attention: !!t.attention,
           lastAccessed: t.lastAccessed || now(),
           groupId,
           pending: !groupId && isSortable(t),
@@ -142,7 +166,8 @@ export function createBackground({
   // What the AI sees of the current tree: groups with open tabs, groups
   // archived recently, and their ancestors. Older archived groups are left out
   // so request size tracks what is in use, not the size of the archive. Site
-  // groups from the fallback are left out so it builds topic groups instead.
+  // groups from the fallback are left out so it builds topic groups instead,
+  // unless the user renamed one: that makes it a group they mean to keep.
   function contextFor(allTabs) {
     const titles = new Map();
     const relevant = new Set();
@@ -161,13 +186,14 @@ export function createBackground({
     state.archive.forEach((a) => {
       if (a.at >= cutoff) add(a.groupId, a.title);
     });
+    const hidden = (g) => !!g.site && !g.manual;
     return Object.values(state.groups)
-      .filter((g) => relevant.has(g.id) && !g.site)
+      .filter((g) => relevant.has(g.id) && !hidden(g))
       .map((g) => ({
         id: g.id,
         name: g.name,
         label: g.label,
-        parentId: g.parentId && !state.groups[g.parentId].site ? g.parentId : null,
+        parentId: g.parentId && !hidden(state.groups[g.parentId]) ? g.parentId : null,
         titles: titles.get(g.id) || [],
       }));
   }
@@ -197,13 +223,32 @@ export function createBackground({
       status.sorting = true;
       push();
 
+      const useAI = !!(state.settings.apiKey && classifyWithAI);
+      const model = state.settings.model || DEFAULTS.model;
+      const context = useAI ? contextFor(all) : [];
+      const nameOf = (gid) => (state.groups[gid] ? pathName(state.groups, gid) : '');
+      // One log entry per run: what the classifier was shown and what it did.
+      const before = new Map(Object.values(state.groups).map((g) => [g.id, g.name]));
+      const entry = {
+        at: now(),
+        model: useAI ? model : '',
+        error: '',
+        groups: context.map((g) => ({ name: nameOf(g.id), label: g.label, titles: g.titles })),
+        tabs: batch.map((t) => ({
+          title: t.title || '',
+          url: logUrl(t.url),
+          openedFrom: nameOf(assign.get(t.openerTabId)?.groupId),
+        })),
+        renames: [],
+      };
+
       let plan = null;
-      if (state.settings.apiKey && classifyWithAI) {
+      if (useAI) {
         try {
           plan = await classifyWithAI({
             apiKey: state.settings.apiKey,
-            model: state.settings.model || DEFAULTS.model,
-            groups: contextFor(all),
+            model,
+            groups: context,
             tabs: batch.map((t) => ({
               id: t.id,
               title: t.title || '',
@@ -214,6 +259,7 @@ export function createBackground({
           status.error = '';
         } catch (e) {
           status.error = (e && e.message) || String(e);
+          entry.error = status.error;
         }
       }
 
@@ -223,7 +269,24 @@ export function createBackground({
       const done = plan ? apply(plan, batch, liveIds) : new Set();
       // Anything the AI skipped, or everything when it is off or failed.
       const rest = batch.filter((t) => liveIds.has(t.id) && !done.has(t.id));
-      if (rest.length) apply(heuristicPlan(rest, state.groups), rest, liveIds);
+      const bySite = rest.length ? apply(heuristicPlan(rest, state.groups), rest, liveIds) : new Set();
+
+      const reasons = new Map(((plan && plan.assignments) || []).map((a) => [a.tabId, a.reason || '']));
+      batch.forEach((t, i) => {
+        const by = done.has(t.id) ? 'ai' : bySite.has(t.id) ? 'site' : '';
+        const gid = by ? assign.get(t.id)?.groupId : null;
+        Object.assign(entry.tabs[i], {
+          by,
+          group: nameOf(gid),
+          created: !!gid && !before.has(gid),
+          reason: by === 'ai' ? reasons.get(t.id) || '' : '',
+        });
+      });
+      before.forEach((name, id) => {
+        const g = state.groups[id];
+        if (g && g.name !== name) entry.renames.push({ from: name, to: g.name });
+      });
+      state.log = [entry, ...state.log].slice(0, LOG_CAP);
     }
   }
 
@@ -272,6 +335,7 @@ export function createBackground({
       groupId,
       at: now(),
       ...(filed?.manual ? { manual: true } : {}),
+      ...(names.has(t.id) ? { name: names.get(t.id) } : {}),
     });
     state.archive = state.archive.slice(0, ARCHIVE_CAP);
   }
@@ -304,6 +368,7 @@ export function createBackground({
     for (const r of records) {
       const tab = await browser.tabs.create({ url: r.url, windowId, active: first });
       first = false;
+      if (r.name) setName(tab.id, r.name);
       if (r.groupId && state.groups[r.groupId]) {
         setAssign(tab.id, r.groupId, hostOf(r.url), !!r.manual);
         expand(r.groupId);
@@ -319,7 +384,7 @@ export function createBackground({
     for (const a of state.archive) {
       // A page that is open again would only duplicate the open result.
       if (openUrls.has(a.url)) continue;
-      if (!matchesQuery(a.title, a.url, q)) continue;
+      if (!matchesQuery(`${a.name || ''} ${a.title}`, a.url, q)) continue;
       out.push(a);
       if (out.length >= SEARCH_LIMIT) break;
     }
@@ -366,9 +431,12 @@ export function createBackground({
       }
       case 'pinTab':
         await browser.tabs.update(msg.tabId, { pinned: !!msg.pinned });
+        // Dropped on a pinned tile: take the place beside it. Pinning moved the
+        // tab, so read where it is now.
+        if (msg.nearTabId != null) await placeBeside(await browser.tabs.get(msg.tabId), msg.nearTabId, msg.after);
         break;
       case 'newTab':
-        await browser.tabs.create({ windowId: msg.windowId });
+        await browser.tabs.create({ windowId: msg.windowId, pinned: !!msg.pinned });
         break;
       case 'toggleGroup':
         if (g) g.collapsed = !g.collapsed;
@@ -386,6 +454,10 @@ export function createBackground({
         g.manual = true;
         break;
       }
+      // An empty name goes back to the page's own title.
+      case 'renameTab':
+        setName(msg.tabId, clean(msg.name, 80));
+        break;
       case 'moveTab': {
         if (!g) break;
         const tab = await browser.tabs.get(msg.tabId);
@@ -461,6 +533,9 @@ export function createBackground({
       case 'resort':
         await resortAll();
         break;
+      case 'clearLog':
+        state.log = [];
+        break;
       default:
         return;
     }
@@ -514,9 +589,10 @@ export function createBackground({
   // ---- wiring ------------------------------------------------------------
 
   async function start() {
-    const stored = await browser.storage.local.get(['groups', 'archive', 'settings', 'counters']);
+    const stored = await browser.storage.local.get(['groups', 'archive', 'settings', 'counters', 'log']);
     state.groups = stored.groups || {};
     state.archive = stored.archive || [];
+    state.log = stored.log || [];
     state.settings = { ...DEFAULTS, ...(stored.settings || {}) };
     state.counters = { ...state.counters, ...(stored.counters || {}) };
 
@@ -525,6 +601,8 @@ export function createBackground({
       seen.set(t.id, t);
       const v = await browser.sessions.getTabValue(t.id, TAB_KEY).catch(() => null);
       if (v && state.groups[v.groupId]) assign.set(t.id, v);
+      const name = await browser.sessions.getTabValue(t.id, NAME_KEY).catch(() => null);
+      if (name) names.set(t.id, name);
     }
     gc();
 
@@ -540,6 +618,7 @@ export function createBackground({
       // Closed by the browser rather than from the sidebar: archived all the same.
       if (!archiving.delete(tabId) && tab && isSortable(tab)) record(tab);
       assign.delete(tabId);
+      names.delete(tabId);
       queue.delete(tabId);
       gc();
       changed();
@@ -562,6 +641,10 @@ export function createBackground({
       if (a) {
         assign.delete(removed);
         setAssign(added, a.groupId, a.host, a.manual);
+      }
+      if (names.has(removed)) {
+        setName(added, names.get(removed));
+        names.delete(removed);
       }
       push();
     });

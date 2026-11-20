@@ -7,6 +7,7 @@ const ICONS = {
   chevron: { size: 11, box: 12, width: 1.5, paths: ['M4.5 2.5L8 6l-3.5 3.5'] },
   pin: { size: 14, box: 16, width: 1.4, paths: ['M6 2h4l-.5 4 2 2.5h-7l2-2.5z', 'M8 8.5V14'] },
   close: { size: 12, box: 12, width: 1.5, paths: ['M3 3l6 6M9 3l-6 6'] },
+  plus: { size: 14, box: 14, width: 1.5, paths: ['M7 2v10M2 7h10'] },
 };
 
 function icon(name, { filled = false, cls = '' } = {}) {
@@ -63,28 +64,55 @@ const actBtn = (act, label, data, child, extra = {}) =>
   el('button', { type: 'button', class: 'act', 'aria-label': label, title: label, data: { act, ...data }, ...extra }, child);
 
 function pinNode(p) {
+  const renaming = editingTab === p.tabId;
   return el('div', {
-    class: `pin ${hueClass(p.hue)}${p.current ? ' current' : ''}`, style: hueStyle(p.hue), title: p.title,
+    class: `pin ${hueClass(p.hue)}${p.current ? ' current' : ''}${renaming ? ' editing' : ''}`,
+    style: hueStyle(p.hue), title: renaming ? null : p.title,
     data: { ctxTab: p.tabId },
-    draggable: 'true',
+    draggable: renaming ? null : 'true',
   },
-    el('div', {
-      class: 'pin-main', role: 'button', tabindex: '0', 'aria-label': p.title,
-      'aria-current': p.current ? 'page' : null, data: { act: 'activate', tab: p.tabId },
-    }, tile(p, true), el('span', { class: 'pin-title' }, p.title)),
-    actBtn('unpinTab', 'Unpin tab', { tab: p.tabId }, icon('pin', { filled: true })),
+    // Inert while renaming, like a group row.
+    renaming
+      ? el('div', { class: 'pin-main' }, tile(p, true), renameInput(p.title, 'Tab name', 80))
+      : el('div', {
+        class: 'pin-main', role: 'button', tabindex: '0',
+        'aria-label': p.badge == null ? p.title : `${p.title}, ${p.badge || 'new'} alerts`,
+        'aria-current': p.current ? 'page' : null, data: { act: 'activate', tab: p.tabId },
+      }, tile(p, true), el('span', { class: 'pin-title' }, p.title)),
+    p.badge == null ? null : el('span', { class: 'badge' + (p.badge ? '' : ' dot'), 'aria-hidden': 'true' }, p.badge),
+    renaming ? null : actBtn('unpinTab', 'Unpin tab', { tab: p.tabId }, icon('pin', { filled: true })),
   );
+}
+
+// The blank cell that evens out the pin grid: opens a new pinned tab, and
+// takes a dropped tab as the last pin.
+function pinSlot() {
+  return el('button', {
+    type: 'button', class: 'pin-add', 'aria-label': 'New pinned tab', title: 'New pinned tab',
+    data: { act: 'newPinnedTab' },
+  }, icon('plus'));
 }
 
 function groupNode(r) {
   const fixed = r.id === UNGROUPED;
-  const pin = actBtn('pinGroup', r.pinLabel, { group: r.id }, icon('pin', { filled: r.hard }), { 'aria-pressed': String(r.hard) });
-  if (r.kept) pin.classList.add('on');
   const renaming = editing === r.id;
+  const pin =actBtn('pinGroup', r.pinLabel, { group: r.id }, icon('pin', { filled: r.hard }), { 'aria-pressed': String(r.hard) });
+  if (r.kept) pin.classList.add('on');
+  // Only the arrow opens and closes the group; the rest of the row is left
+  // for dragging and for double-clicking to rename. Not a <button>: Firefox
+  // does not start a drag from inside one. Inert while renaming.
+  const twist = fixed ? null : el('span', {
+    class: 'twist',
+    ...(renaming ? {} : {
+      role: 'button', tabindex: '0',
+      'aria-label': `${r.open ? 'Collapse' : 'Expand'} ${r.name}`, 'aria-expanded': String(r.open),
+      data: { act: 'toggleGroup', group: r.id },
+    }),
+  }, icon('chevron', { cls: 'chev' }));
   const parts = [
-    fixed ? null : icon('chevron', { cls: 'chev' }),
+    twist,
     el('span', { class: 'dot', 'aria-hidden': 'true' }),
-    renaming ? renameInput(r) : el('span', { class: 'gname' }, r.name),
+    renaming ? renameInput(r.name, 'Group name', 40) : el('span', { class: 'gname' }, r.name),
     el('span', { class: 'chip' }, r.label),
   ];
   return el('div', {
@@ -93,16 +121,7 @@ function groupNode(r) {
     data: fixed ? {} : { ctxGroup: r.id },
     draggable: fixed || renaming ? null : 'true',
   },
-    // Not a <button>: Firefox does not start a drag from inside one. The row
-    // is inert while renaming.
-    renaming
-      ? el('div', { class: 'row-main' }, ...parts)
-      : el('div', {
-        class: 'row-main', title: r.name,
-        role: fixed ? null : 'button', tabindex: fixed ? null : '0',
-        'aria-expanded': fixed ? null : String(r.open),
-        data: fixed ? {} : { act: 'toggleGroup', group: r.id },
-      }, ...parts),
+    el('div', { class: 'row-main', title: renaming ? null : r.name }, ...parts),
     el('div', { class: 'acts' },
       fixed ? null : pin,
       fixed ? null : actBtn('archiveGroup', 'Close group', { group: r.id }, icon('close')),
@@ -111,17 +130,21 @@ function groupNode(r) {
 }
 
 function tabNode(r) {
+  const renaming = editingTab === r.tabId;
+  const indent = `padding-left:${22 + r.depth * 14}px`;
   return el('div', {
-    class: `row tab ${hueClass(r.hue)}${r.current ? ' current' : ''}`,
-    style: `${hueStyle(r.hue)}opacity:${r.fade}`,
-    title: r.title,
+    class: `row tab ${hueClass(r.hue)}${r.current ? ' current' : ''}${renaming ? ' editing' : ''}`,
+    style: `${hueStyle(r.hue)}opacity:${renaming ? 1 : r.fade}`,
+    title: renaming ? null : r.title,
     data: { ctxTab: r.tabId, ...(r.groupId ? { ctxIn: r.groupId } : {}) },
-    draggable: 'true',
+    draggable: renaming ? null : 'true',
   },
-    el('div', {
-      class: 'row-main', role: 'button', tabindex: '0', style: `padding-left:${22 + r.depth * 14}px`,
-      'aria-current': r.current ? 'page' : null, data: { act: 'activate', tab: r.tabId },
-    }, tile(r), el('span', { class: 'ttitle' }, r.title)),
+    renaming
+      ? el('div', { class: 'row-main', style: indent }, tile(r), renameInput(r.title, 'Tab name', 80))
+      : el('div', {
+        class: 'row-main', role: 'button', tabindex: '0', style: indent,
+        'aria-current': r.current ? 'page' : null, data: { act: 'activate', tab: r.tabId },
+      }, tile(r), el('span', { class: 'ttitle' }, r.title)),
     el('div', { class: 'acts' },
       actBtn('pinTab', 'Pin tab', { tab: r.tabId }, icon('pin')),
       actBtn('closeTab', 'Close tab', { tab: r.tabId }, icon('close')),
@@ -169,14 +192,15 @@ let port = null;
 let query = '';
 let hits = { query: '', tabs: [] }; // archived tabs matching a query, from the background
 let editing = null; // id of the group being renamed in its row
+let editingTab = null; // id of the tab being renamed in its row or pinned tile
 let menuTarget = null; // what this sidebar's open context menu was opened on
 let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
 let marked = null; // the drop target currently highlighted
 
-function renameInput(r) {
+function renameInput(value, label, maxlength) {
   const input = el('input', {
-    type: 'text', class: 'rename', value: r.name, maxlength: 40,
-    'aria-label': 'Group name', autocomplete: 'off', spellcheck: 'false',
+    type: 'text', class: 'rename', value, maxlength,
+    'aria-label': label, autocomplete: 'off', spellcheck: 'false',
   });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') finishRename(input, true);
@@ -187,13 +211,22 @@ function renameInput(r) {
 }
 
 function finishRename(input, commit) {
-  if (editing == null) return;
+  if (editing == null && editingTab == null) return;
   const groupId = editing;
+  const tabId = editingTab;
   editing = null;
+  editingTab = null;
   const name = input.value.trim();
-  if (commit && name && name !== input.defaultValue && snap.groups[groupId]) {
-    snap.groups[groupId].name = name; // shown at once; the next snapshot confirms it
-    send('renameGroup', { groupId, name });
+  if (commit && name !== input.defaultValue) {
+    // Shown at once; the next snapshot confirms it.
+    if (tabId != null) {
+      const tab = snap.tabs.find((t) => t.id === tabId);
+      if (tab) tab.name = name;
+      send('renameTab', { tabId, name }); // an empty name restores the page's title
+    } else if (name && snap.groups[groupId]) {
+      snap.groups[groupId].name = name;
+      send('renameGroup', { groupId, name });
+    }
   }
   render();
 }
@@ -201,6 +234,7 @@ function finishRename(input, commit) {
 const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 const SLIDE_MS = 200; // matches the row animations in sidebar.css
 let listSig = null; // what the list last rendered, to leave it alone when nothing changed
+let pinsSig = null; // the same for the pin grid
 
 // Rebuilds the list. Rows that are new slide open and rows that went away
 // slide shut in place, which is what opening and closing a group looks like.
@@ -271,16 +305,26 @@ function render() {
   if (view.searching) {
     $('results').replaceChildren(...resultsNodes(view));
   } else {
-    const list = $('list');
-    $('pins').hidden = !view.pins.length;
+    // The tab being renamed may have closed before its field was built.
+    if (editingTab != null && !snap.tabs.some((t) => t.id === editingTab)) editingTab = null;
     // A drag keeps everything in place: its source has to stay in the document.
-    if (!drag) $('pins').replaceChildren(...view.pins.map(pinNode));
-    // A rename in progress keeps its row: rebuilding would drop what was typed.
-    const sig = JSON.stringify([view.rows, editing]);
-    if (!drag && sig !== listSig && (editing == null || !list.querySelector('.rename'))) {
-      listSig = sig;
-      renderList(view.rows);
-      const input = list.querySelector('.rename');
+    // So does a rename in progress: rebuilding would drop what was typed.
+    const renaming = editing != null || editingTab != null;
+    if (!drag && !(renaming && $('browse').querySelector('.rename'))) {
+      $('pins').hidden = !view.pins.length;
+      // Left alone when unchanged, like the list: a double-click's first click
+      // re-renders, and its target has to still be in the document.
+      const pinSig = JSON.stringify([view.pins, editingTab]);
+      if (pinSig !== pinsSig) {
+        pinsSig = pinSig;
+        $('pins').replaceChildren(...view.pins.map(pinNode), view.pins.length % 2 ? pinSlot() : '');
+      }
+      const sig = JSON.stringify([view.rows, editing, editingTab]);
+      if (sig !== listSig) {
+        listSig = sig;
+        renderList(view.rows);
+      }
+      const input = $('browse').querySelector('.rename');
       if (input) {
         window.focus();
         input.focus();
@@ -328,8 +372,28 @@ document.addEventListener('click', (event) => {
     case 'reopenGroup': clearSearch(); send('reopenGroup', { groupId: group }); break;
     case 'reopenTab': clearSearch(); send('reopenTab', { archiveId: archive }); break;
     case 'newTab': send('newTab'); break;
+    case 'newPinnedTab': send('newTab', { pinned: true }); break;
     case 'settings': browser.runtime.openOptionsPage(); break;
     default: return;
+  }
+  render();
+});
+
+// Double-clicking a group's row, a tab's row or a pinned tile renames it in
+// place. A group's arrow is left out: two quick clicks there toggle it twice.
+document.addEventListener('dblclick', (event) => {
+  if (!snap || !event.target.closest || event.target.closest('.twist')) return;
+  const main = event.target.closest('#list .row-main, #pins .pin-main');
+  if (!main) return;
+  const groupId = main.parentNode.dataset.ctxGroup;
+  if (groupId && snap.groups[groupId]) {
+    editing = groupId;
+    editingTab = null;
+  } else if (main.dataset.tab) {
+    editing = null;
+    editingTab = Number(main.dataset.tab);
+  } else {
+    return;
   }
   render();
 });
@@ -347,12 +411,30 @@ document.addEventListener('keydown', (event) => {
 // A tab dropped on a group joins it; dropped on a tab it also takes the place
 // before or after it. A group dropped on the middle of a group nests in it;
 // on the top or bottom edge it becomes its sibling there. A pinned tile can
-// be reordered among the pinned tiles.
+// be reordered among the pinned tiles. A tab dropped on the pin grid is pinned:
+// beside the tile it lands on, or last when dropped on the blank cell.
 
 function dropFor(event) {
   if (!drag || !snap || !event.target.closest) return null;
+  const slot = event.target.closest('#pins .pin-add');
+  const pin = event.target.closest('#pins .pin');
+  if (slot) {
+    if (drag.tabId != null) return { row: slot, where: 'into', msg: ['pinTab', { tabId: drag.tabId, pinned: true }] };
+    const last = slot.previousElementSibling;
+    const nearTabId = last ? Number(last.dataset.ctxTab) : drag.pinId;
+    if (drag.pinId == null || nearTabId === drag.pinId) return null;
+    return { row: slot, where: 'into', msg: ['placeTab', { tabId: drag.pinId, nearTabId, after: true }] };
+  }
+  if (pin && drag.tabId != null) {
+    const rect = pin.getBoundingClientRect();
+    const after = (event.clientX - rect.left) / rect.width > 0.5;
+    return {
+      row: pin,
+      where: after ? 'right' : 'left',
+      msg: ['pinTab', { tabId: drag.tabId, pinned: true, nearTabId: Number(pin.dataset.ctxTab), after }],
+    };
+  }
   if (drag.pinId != null) {
-    const pin = event.target.closest('#pins .pin');
     const nearTabId = pin ? Number(pin.dataset.ctxTab) : drag.pinId;
     if (nearTabId === drag.pinId) return null;
     const rect = pin.getBoundingClientRect();
@@ -397,6 +479,16 @@ document.addEventListener('dragstart', (event) => {
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('application/x-tidy-row', '1'); // Firefox needs some data to start a drag
   row.classList.add('dragging');
+  // With nothing pinned there is no grid to drop on: show a blank cell for the
+  // drag. Deferred, as changing the layout inside dragstart can cancel the drag.
+  if (drag.tabId != null && $('pins').hidden) {
+    requestAnimationFrame(() => {
+      if (!drag) return;
+      $('pins').replaceChildren(pinSlot());
+      pinsSig = null;
+      $('pins').hidden = false;
+    });
+  }
 });
 document.addEventListener('dragover', (event) => {
   const drop = dropFor(event);
@@ -487,6 +579,7 @@ function connect() {
       searchArchive(); // the archive may have changed under an open search
     } else if (msg.type === 'editGroup') {
       clearSearch();
+      editingTab = null;
       editing = msg.groupId; // its row may only arrive with the next snapshot
     } else {
       return;
