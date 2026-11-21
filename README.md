@@ -94,7 +94,7 @@ Toolbar defaults and the sidebar-open default only apply to a new profile. `./ma
 
 ### What the fork turns off
 
-Default prefs in `browser/branding/rolltop/pref/firefox-branding.js` turn off telemetry upload and the data-reporting notice, studies and remote experiments, crash report submission, sponsored and recommended content (new tab, address bar, add-ons manager), and Firefox's onboarding, tours and post-update pages. `rolltop/mozconfig-release` also builds without the updater and the crash reporter.
+Default prefs in `browser/branding/rolltop/pref/firefox-branding.js` turn off telemetry upload and the data-reporting notice, studies and remote experiments, crash report submission, sponsored and recommended content (new tab, address bar, add-ons manager), trending searches in the address bar, Mozilla's default new-tab tiles and search-engine shortcuts, the AI chatbot, link previews and smart tab groups, promotions for other Mozilla products (VPN, Focus, mobile, Relay, Monitor), and Firefox's onboarding, tours and post-update pages. `rolltop/mozconfig-release` also builds without the updater and the crash reporter.
 
 Still talking to Mozilla, on purpose:
 
