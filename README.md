@@ -64,6 +64,24 @@ Then commit the refreshed copy in the fork. Set `ROLLTOP_FIREFOX` if the checkou
 
 Firefox hides built-in add-ons from `about:addons`, so Rolltop's settings are reached from the toolbar button's right-click menu. The button sits in the extensions panel (puzzle-piece icon) by default.
 
+### uBlock Origin
+
+The fork ships uBlock Origin as the signed file from addons.mozilla.org, in `browser/extensions/rolltop/distribution/`. The build puts it in the app's `distribution/extensions/`, and Firefox copies it into each new profile on first run. From then on it is an ordinary add-on: it is listed in `about:addons`, updates itself from addons.mozilla.org, and can be disabled or removed. A removed copy is not reinstalled.
+
+Existing profiles pick it up the first time they run a build with a new Firefox version. For `./mach run`, delete `obj-rolltop/tmp/profile-default` to get it straight away.
+
+The bundled copy only decides which version a new profile starts on. To refresh it:
+
+```sh
+npm run fork:ublock               # download the latest signed release into the fork
+cd ../rolltop-firefox
+./mach build faster
+```
+
+Then commit the new file in the fork. To ship another add-on the same way, add its signed `.xpi`, named `<add-on ID>.xpi`, to that directory and list it in the `moz.build` there.
+
+uBlock Origin does not run in private windows until that is allowed in its `about:addons` entry.
+
 ### Branding
 
 The logo source is `branding/rolltop-logo.svg`. `npm run fork:brand` rasterizes it into `browser/branding/rolltop/` in the fork: window icons, the macOS app icon (`Assets.car` and `firefox.icns`), Windows `.ico` files and the about-page logo. It needs macOS with Xcode and ImageMagick. Commit the regenerated files in the fork.
