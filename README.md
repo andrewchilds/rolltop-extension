@@ -33,6 +33,62 @@ Extensions cannot remove Firefox's own tab bar. To hide it, set `toolkit.legacyU
 #sidebar-header { display: none !important; }
 ```
 
+## Firefox fork
+
+The fork is a separate checkout at `../rolltop-firefox`: Mozilla's `esr153` branch with Rolltop's changes on a local branch named `rolltop`. `origin` there is `https://github.com/mozilla-firefox/firefox`.
+
+**The `rolltop` branch exists only on this machine.** Until it is pushed to a remote of your own, deleting the checkout loses the fork's commits.
+
+### Build and run
+
+```sh
+cd ../rolltop-firefox
+./mach build faster && ./mach run
+```
+
+`build faster` covers JS, CSS and XHTML edits. Use `./mach build` after changing a `moz.build`, a `mozconfig`, or after a rebase. `./mach run` uses a throwaway profile in `obj-rolltop/tmp/profile-default`, separate from your real Firefox profile.
+
+On a new machine: clone, check out `rolltop`, run `./mach --no-interactive bootstrap --application-choice browser_artifact_mode`, then recreate the local `mozconfig` below.
+
+### Build config
+
+| File | Tracked | Holds |
+|---|---|---|
+| `rolltop/mozconfig` | yes | Options every build shares. |
+| `mozconfig` | no (upstream ignores it) | Sources the file above and adds local options. |
+
+The local `mozconfig`:
+
+```sh
+. "$topsrcdir/rolltop/mozconfig"
+ac_add_options --enable-artifact-builds
+```
+
+`--enable-artifact-builds` downloads Mozilla's compiled binaries, so builds take about two minutes and only front-end changes take effect. A build you give to anyone else must be a full build: remove that line. Expect about an hour and 40 GB of disk the first time.
+
+### Security releases
+
+Mozilla ships security fixes to ESR every four weeks, and occasionally in between when a bug is being exploited. The dates are at <https://whattrainisitnow.com> and the fixes at <https://www.mozilla.org/security/advisories/>. Each advisory tells attackers where the bugs are, so take every release soon after it lands:
+
+```sh
+cd ../rolltop-firefox
+git fetch origin esr153
+git rebase origin/esr153 rolltop
+./mach build && ./mach run
+```
+
+Check `browser/config/version_display.txt` for the new version, and that the browser starts and the sidebar loads.
+
+If the rebase stops on a conflict, it is in an upstream file the fork edited. Resolve it by reapplying the fork's few lines on top of upstream's new version, then `git rebase --continue`. `git rebase --abort` returns the branch to where it was.
+
+`esr153` stops receiving fixes about three months after the next ESR branch appears, roughly a year after 153 shipped. Moving to the next ESR is the same rebase onto the new branch, with more conflicts.
+
+### Keeping rebases cheap
+
+- Put the fork's own files (prefs, stylesheets, modules) under `rolltop/`.
+- Edit an upstream file only to reference one of those files, in as few lines as possible.
+- One commit per change, so a conflict points at one feature.
+
 ## Layout
 
 | Path | What it is |
