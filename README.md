@@ -72,6 +72,26 @@ The product name is set in that directory's `configure.sh` and `locales/en-US/br
 
 Still Mozilla's Nightly artwork, copied from `browser/branding/unofficial`: the document and disk-image icons, the DMG background, the Windows installer bitmaps and MSIX tiles, and the private-browsing icons. Replace them before distributing.
 
+### Window chrome
+
+The fork hides the native tab strip, trims the toolbar to back, forward, reload, the address bar and the menu, opens the Rolltop sidebar by default without its header, and draws the page as a rounded card.
+
+| What | Where in the fork |
+|---|---|
+| Styles | `browser/branding/rolltop/content/rolltop.css` |
+| Default prefs | `browser/branding/rolltop/pref/firefox-branding.js` |
+
+Upstream files the fork edits, which are where a rebase can conflict:
+
+| File | Edit |
+|---|---|
+| `browser/extensions/moz.build` | Adds the `rolltop` directory. |
+| `browser/themes/shared/browser-shared.css` | Imports `rolltop.css`. |
+| `browser/components/tabbrowser/content/tabbrowser.js` | Hides the tab strip when `rolltop.hideTabStrip` is set. |
+| `browser/components/customizableui/CustomizableUI.sys.mjs` | Drops the flexible spaces and the account button from the default toolbar. |
+
+Toolbar defaults and the sidebar-open default only apply to a new profile. `./mach run` keeps its profile between runs; delete `obj-rolltop/tmp/profile-default` to see defaults again.
+
 ### Build config
 
 | File | Tracked | Holds |
