@@ -92,6 +92,21 @@ Upstream files the fork edits, which are where a rebase can conflict:
 
 Toolbar defaults and the sidebar-open default only apply to a new profile. `./mach run` keeps its profile between runs; delete `obj-rolltop/tmp/profile-default` to see defaults again.
 
+### What the fork turns off
+
+Default prefs in `browser/branding/rolltop/pref/firefox-branding.js` turn off telemetry upload and the data-reporting notice, studies and remote experiments, crash report submission, sponsored and recommended content (new tab, address bar, add-ons manager), and Firefox's onboarding, tours and post-update pages. `rolltop/mozconfig-release` also builds without the updater and the crash reporter.
+
+Still talking to Mozilla, on purpose:
+
+- **Remote Settings** (`firefox.settings.services.mozilla.com`): certificate revocation, the add-on blocklist, search engine config and tracking-protection lists. Turning it off makes the browser less safe.
+- **Captive-portal and connectivity checks** (`detectportal.firefox.com`).
+- **Sync and accounts**, and **addons.mozilla.org**, when you use them.
+- **Media codec downloads** (OpenH264, Widevine) on first use.
+
+Missing until Rolltop has its own keys: Google Safe Browsing (phishing and malware warnings), which needs a Google API key built in. Mozilla's own builds have one; this fork does not, so those warnings are not active.
+
+Artifact builds still contain Mozilla's updater. It finds no updates on this build's channel, but it does ask.
+
 ### Build config
 
 | File | Tracked | Holds |
