@@ -64,6 +64,14 @@ Then commit the refreshed copy in the fork. Set `ROLLTOP_FIREFOX` if the checkou
 
 Firefox hides built-in add-ons from `about:addons`, so Rolltop's settings are reached from the toolbar button's right-click menu. The button sits in the extensions panel (puzzle-piece icon) by default.
 
+### Branding
+
+The logo source is `branding/rolltop-logo.svg`. `npm run fork:brand` rasterizes it into `browser/branding/rolltop/` in the fork: window icons, the macOS app icon (`Assets.car` and `firefox.icns`), Windows `.ico` files and the about-page logo. It needs macOS with Xcode and ImageMagick. Commit the regenerated files in the fork.
+
+The product name is set in that directory's `configure.sh` and `locales/en-US/brand.ftl` and `brand.properties`.
+
+Still Mozilla's Nightly artwork, copied from `browser/branding/unofficial`: the document and disk-image icons, the DMG background, the Windows installer bitmaps and MSIX tiles, and the private-browsing icons. Replace them before distributing.
+
 ### Build config
 
 | File | Tracked | Holds |
@@ -77,6 +85,8 @@ The local `mozconfig`:
 . "$topsrcdir/rolltop/mozconfig"
 ac_add_options --enable-artifact-builds
 ```
+
+For a full build, source `rolltop/mozconfig-release` instead and drop the artifact line. It adds `--with-app-basename=Rolltop`, which names the binary and the profile directory after Rolltop. Artifact builds cannot use it, so they are named Rolltop but run Mozilla's `firefox` binary and, outside `./mach run`, would use the regular Firefox profile directory. The release config has not been built yet.
 
 `--enable-artifact-builds` downloads Mozilla's compiled binaries, so builds take about two minutes and only front-end changes take effect. A build you give to anyone else must be a full build: remove that line. Expect about an hour and 40 GB of disk the first time.
 

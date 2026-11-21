@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFBF4"/>
+      <stop offset="1" stop-color="#F3E7D4"/>
+    </linearGradient>
+    <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="0" y1="15" x2="0" y2="660">
+      <stop offset="0" stop-color="#DB8C38"/>
+      <stop offset="1" stop-color="#C26C20"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App tile -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+
+  <!-- Rolltop mark, drawn on a 720 x 675 grid -->
+  <g transform="translate(512 516) scale(0.8) translate(-360 -337)"
+     fill="none" stroke="url(#ink)" stroke-width="50" stroke-linejoin="round">
+    <!-- Hood with rolled shoulders, running down into the outer legs -->
+    <path d="M65 660V125a85 85 0 0 1 85-85h420a85 85 0 0 1 85 85v535"/>
+    <!-- Tambour slat, then two shelves of pigeonholes -->
+    <path d="M65 130h590M65 250h590"/>
+    <path d="M360 130v120"/>
+    <!-- Writing surface, overhanging the carcase -->
+    <path d="M25 370h670" stroke-linecap="round"/>
+    <!-- Dividers that sweep out into the legs -->
+    <path d="M255 250v200c0 116-190 96-190 210"/>
+    <path d="M465 250v200c0 116 190 96 190 210"/>
+  </g>
+</svg>
