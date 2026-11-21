@@ -113,13 +113,13 @@ Toolbar defaults and the sidebar-open default only apply to a new profile. `./ma
 
 ### What the fork turns off
 
-Default prefs in `browser/branding/rolltop/pref/firefox-branding.js` turn off telemetry upload and the data-reporting notice, studies and remote experiments, crash report submission, sponsored and recommended content (new tab, address bar, add-ons manager), trending searches in the address bar, Mozilla's default new-tab tiles and search-engine shortcuts, the AI chatbot, link previews and smart tab groups, promotions for other Mozilla products (VPN, Focus, mobile, Relay, Monitor), and Firefox's onboarding, tours and post-update pages. `rolltop/mozconfig-release` also builds without the updater and the crash reporter.
+Default prefs in `browser/branding/rolltop/pref/firefox-branding.js` turn off telemetry upload and the data-reporting notice, studies and remote experiments, crash report submission, sponsored and recommended content (new tab, address bar, add-ons manager), trending searches in the address bar, Mozilla's default new-tab tiles and search-engine shortcuts, the AI chatbot, link previews and smart tab groups, promotions for other Mozilla products (VPN, Focus, mobile, Relay, Monitor), Firefox accounts and Sync, and Firefox's onboarding, tours and post-update pages. `rolltop/mozconfig-release` also builds without the updater and the crash reporter.
 
 Still talking to Mozilla, on purpose:
 
 - **Remote Settings** (`firefox.settings.services.mozilla.com`): certificate revocation, the add-on blocklist, search engine config and tracking-protection lists. Turning it off makes the browser less safe.
 - **Captive-portal and connectivity checks** (`detectportal.firefox.com`).
-- **Sync and accounts**, and **addons.mozilla.org**, when you use them.
+- **addons.mozilla.org**, when you install or update add-ons.
 - **Media codec downloads** (OpenH264, Widevine) on first use.
 
 Missing until Rolltop has its own keys: Google Safe Browsing (phishing and malware warnings), which needs a Google API key built in. Mozilla's own builds have one; this fork does not, so those warnings are not active.
