@@ -772,3 +772,119 @@ test('archiving a group leaves its pinned tabs open', async () => {
   assert.deepEqual(bg.state.archive.map((a) => a.url), ['https://example.com/b']);
   assert.equal(bg.assign.get(1).groupId, groupId);
 });
+
+// ---- workspace export and import -----------------------------------------
+
+async function exported() {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://news.example.com/a', title: 'Story', pinned: true },
+    { id: 2, url: 'https://shop.example.org/desk', title: 'Desk' },
+    { id: 3, url: 'https://shop.example.org/lamp', title: 'Lamp' },
+    { id: 4, url: 'about:newtab' },
+    { id: 5, url: 'https://secret.example.net/', incognito: true },
+    { id: 6, url: 'https://old.example.dev/', title: 'Old' },
+  ], { stored: { settings: { archiveDays: 30 } } });
+  await bg.handle({ type: 'layoutPins', windowId: 1, rows: [[1]] });
+  await bg.handle({ type: 'renameGroup', groupId: bg.assign.get(2).groupId, name: 'Desk setup' });
+  await bg.handle({ type: 'pinGroup', groupId: bg.assign.get(2).groupId });
+  await bg.handle({ type: 'renameTab', tabId: 2, name: 'The desk' });
+  await bg.handle({ type: 'closeTab', tabId: 3 });
+  await bg.handle({ type: 'closeTab', tabId: 6 });
+  return { bg, browser };
+}
+
+test('an export holds the open web tabs and their groups, not the archive or settings', async () => {
+  const { bg } = await exported();
+  const data = await bg.exportWorkspace();
+  assert.equal(data.format, 'rolltop-workspace');
+  assert.deepEqual(data.tabs.map((t) => t.url), ['https://news.example.com/a', 'https://shop.example.org/desk']);
+  assert.deepEqual(data.tabs[0].pinRow, 0);
+  assert.equal(data.tabs[1].name, 'The desk');
+  // The group holding only an archived tab is still here, but not in the file.
+  assert.equal(Object.values(bg.state.groups).some((g) => g.name === 'example.dev'), true);
+  assert.deepEqual(data.groups.map((g) => g.name).sort(), ['Desk setup', 'example.com']);
+  assert.deepEqual(Object.keys(data).sort(), ['exportedAt', 'format', 'groups', 'tabs', 'version']);
+  assert.doesNotThrow(() => JSON.stringify(data));
+});
+
+test('importing into another browser rebuilds the groups and tabs', async () => {
+  const data = JSON.parse(JSON.stringify(await (await exported()).bg.exportWorkspace()));
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://local.example.io/', pinned: true },
+    { id: 2, url: 'https://local.example.io/two' },
+  ]);
+  await bg.handle({ type: 'layoutPins', windowId: 1, rows: [[1]] });
+  const created = [];
+  const create = browser.tabs.create;
+  browser.tabs.create = (props) => { created.push(props); return create(props); };
+
+  const result = await bg.importWorkspace(data, 1);
+  await tick();
+  await bg.runClassify();
+  assert.deepEqual(result, { groups: 2, tabs: 2, skipped: 0, failed: 0 });
+
+  // Pinned tabs load; the rest are opened unloaded with their titles.
+  assert.deepEqual(created, [
+    { url: 'https://news.example.com/a', windowId: 1, pinned: true, active: false },
+    { url: 'https://shop.example.org/desk', windowId: 1, active: false, discarded: true, title: 'Desk' },
+  ]);
+  const snap = await bg.snapshot();
+  const tab = (url) => snap.tabs.find((t) => t.url === url);
+  const desk = tab('https://shop.example.org/desk');
+  assert.equal(snap.groups[desk.groupId].name, 'Desk setup');
+  assert.equal(snap.groups[desk.groupId].pinned, true);
+  assert.equal(desk.name, 'The desk');
+  assert.equal(desk.pending, false);
+  assert.equal(snap.groups[tab('https://news.example.com/a').groupId].name, 'example.com');
+  // The imported pin row sits below the one already here.
+  assert.equal(tab('https://local.example.io/').pinRow, 0);
+  assert.equal(tab('https://news.example.com/a').pinRow, 1);
+  // The tabs that were here keep their group.
+  assert.equal(groupOf(bg, 2).name, 'example.io');
+  // Neither the archive nor the settings came along.
+  assert.deepEqual(bg.searchArchive('lamp'), []);
+  assert.equal(bg.state.settings.archiveDays, 14);
+  // Group assignments are stored with the tabs, so they survive a restart.
+  assert.equal(browser._tabValues.get(desk.id + 'tidy').groupId, desk.groupId);
+});
+
+test('importing the same file twice adds nothing the second time', async () => {
+  const data = await (await exported()).bg.exportWorkspace();
+  const { bg, browser } = await boot([{ id: 1, url: 'https://local.example.io/' }]);
+  await bg.importWorkspace(data, 1);
+  const groups = Object.keys(bg.state.groups).length;
+  const again = await bg.importWorkspace(data, 1);
+  assert.deepEqual(again, { groups: 0, tabs: 0, skipped: 2, failed: 0 });
+  assert.equal(Object.keys(bg.state.groups).length, groups);
+  assert.equal(browser._tabs.length, 3);
+});
+
+test('a tab that cannot be opened is counted, and one with no group is sorted after the import', async () => {
+  const { bg, browser } = await boot([{ id: 1, url: 'https://local.example.io/' }]);
+  const create = browser.tabs.create;
+  browser.tabs.create = (props) => (props.url.includes('broken') ? Promise.reject(new Error('no')) : create(props));
+  const result = await bg.importWorkspace({
+    format: 'rolltop-workspace',
+    version: 1,
+    groups: [{ id: 'g1', name: 'Only broken', order: 1 }],
+    tabs: [
+      { url: 'https://broken.example.com/', groupId: 'g1' },
+      { url: 'https://loose.example.org/', groupId: null },
+    ],
+  }, 1);
+  await tick();
+  await bg.runClassify();
+  assert.deepEqual(result, { groups: 1, tabs: 1, skipped: 0, failed: 1 });
+  // The group whose only tab failed is not left behind empty.
+  assert.deepEqual(Object.values(bg.state.groups).map((g) => g.name).sort(), ['example.io', 'example.org']);
+});
+
+test('a file that is not a workspace changes nothing', async () => {
+  const { bg, browser } = await boot([{ id: 1, url: 'https://local.example.io/' }]);
+  await assert.rejects(bg.importWorkspace({ tabs: [{ url: 'https://x.example.com/' }] }, 1), /not a Rolltop workspace/);
+  assert.equal(browser._tabs.length, 1);
+  // A tab closed afterwards still cleans up its group: the import is not left "in progress".
+  await bg.handle({ type: 'closeTab', tabId: 1 });
+  await tick();
+  assert.equal(bg.searchArchive('local').length, 1);
+});

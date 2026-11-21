@@ -12,6 +12,8 @@
   .hint { font-size: 13px; opacity: 0.75; }
   label { display: block; font-weight: 600; margin: 12px 0 4px; }
   label.check { display: flex; align-items: center; gap: 8px; }
+  h2.section { margin-top: 28px; }
+  .section ~ .actions { margin-top: 10px; }
   input { font: inherit; padding: 6px 8px; box-sizing: border-box; }
   input[type="password"], input[type="text"] { width: 100%; }
   input[type="number"] { width: 90px; }
@@ -56,6 +58,20 @@
     <span id="status" role="status" class="hint"></span>
   </div>
 </form>
+
+<h2 class="section">Workspace</h2>
+<p>A workspace file holds your open tabs and the groups they are in. Export one here and import it in another browser to move your tabs there.</p>
+<div class="actions">
+  <button type="button" id="export">Export workspace</button>
+</div>
+<p class="hint">Archived tabs, these settings, private windows and pages that are not on the web are left out.</p>
+<label for="importFile">Import a workspace file</label>
+<input id="importFile" type="file" accept=".json,application/json">
+<p class="hint">Adds to what is here: groups with the same name are merged, and a tab already open in its group is skipped. Tabs open in this window, unloaded until you visit them.</p>
+<div class="actions">
+  <button type="button" id="import" disabled>Import</button>
+  <span id="workspaceStatus" role="status" class="hint"></span>
+</div>
 
 <div class="log-head">
   <h2>Sorting log</h2>

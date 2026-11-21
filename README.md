@@ -9,6 +9,7 @@ A Firefox sidebar that groups, labels and archives tabs for you.
 - **Pinned and Browsing.** Below Favorites the list has two sections with a line between them. Pinning a top-level group moves it, with everything nested in it, up into Pinned; dragging a group beside one on the other side moves it across too. Pinned is yours: nothing fades or archives, and the classifier cannot file tabs there, add or rename groups, or move a tab out when it navigates. New tabs are always sorted into Browsing.
 - **Right-click.** A tab row or pinned tile opens Firefox's own tab menu with **Archive tab** and **Move to group** added. A group row offers Rename, Pin, Collapse and Archive; the ellipsis on the row opens the same actions. A group you rename keeps its name, and a tab you move stays where you put it, whatever the classifier thinks.
 - **Middle-click.** A tab row or pinned tile closes that tab; a group row closes the group. Both are archived, so they can be reopened.
+- **Move to another browser.** Settings has **Export workspace**, which saves your open tabs and their groups to a file, and an import for that file. Importing adds to what is there: groups with the same name are merged, a tab already open in its group is skipped, and tabs open unloaded until you visit them (pinned tabs load). Archived tabs and settings are not in the file.
 - **Drag and drop.** Drag a tab onto a group to move it, or beside another tab to place it. Drag a group onto another to nest it (up to three levels), or to its top or bottom edge to reorder.
 
 ## Run it
@@ -173,7 +174,8 @@ If the rebase stops on a conflict, it is in an upstream file the fork edited. Re
 | `extension/` | The loadable extension. `dist/background.js` is built. |
 | `extension/lib/model.js` | Turns tabs and groups into the rows the sidebar renders. |
 | `extension/lib/plan.js` | Applies a classifier's plan to the group tree; site-based fallback. |
-| `src/background/core.js` | Tab tracking, classification queue, archive, auto-tidy. |
+| `extension/lib/workspace.js` | The workspace file: checks one being imported and merges its groups into the tree. |
+| `src/background/core.js` | Tab tracking, classification queue, archive, auto-tidy, workspace export and import. |
 | `src/background/classify-ai.js` | The Claude request. |
 | `test/` | `npm test`. `test/harness/` renders the sidebar with sample data in any browser: serve the repo root and open `/test/harness/?w=300`. |
 

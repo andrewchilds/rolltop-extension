@@ -41,6 +41,71 @@ $('resort').addEventListener('click', async () => {
   $('status').textContent = 'Done.';
 });
 
+// ---- workspace export and import ------------------------------------------
+
+const say = (text) => { $('workspaceStatus').textContent = text; };
+const count = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+const failure = (e) => (e && e.message) || String(e);
+let pending = null; // the parsed file waiting for the Import button
+
+$('export').addEventListener('click', async () => {
+  try {
+    const data = await browser.runtime.sendMessage({ type: 'exportWorkspace' });
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    const d = new Date();
+    const day = [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, '0')).join('-');
+    link.download = `rolltop-workspace-${day}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    say(`Exported ${count(data.tabs.length, 'tab')} in ${count(data.groups.length, 'group')}.`);
+  } catch (e) {
+    say(failure(e));
+  }
+});
+
+// Choosing a file only reads it; nothing changes until Import is pressed.
+$('importFile').addEventListener('change', async () => {
+  pending = null;
+  $('import').disabled = true;
+  const file = $('importFile').files[0];
+  if (!file) return say('');
+  try {
+    const data = JSON.parse(await file.text());
+    const size = (list) => (Array.isArray(list) ? list.length : 0);
+    if (!data || data.format !== 'rolltop-workspace') throw new Error('This is not a Rolltop workspace file.');
+    pending = data;
+    $('import').disabled = false;
+    say(`${count(size(data.tabs), 'tab')} in ${count(size(data.groups), 'group')} in this file.`);
+  } catch (e) {
+    say(e instanceof SyntaxError ? 'This file is not valid JSON.' : failure(e));
+  }
+});
+
+$('import').addEventListener('click', async () => {
+  if (!pending) return;
+  $('import').disabled = true;
+  say('Importing…');
+  try {
+    const here = await browser.tabs.getCurrent();
+    const r = await browser.runtime.sendMessage({ type: 'importWorkspace', data: pending, windowId: here && here.windowId });
+    pending = null;
+    $('importFile').value = '';
+    say([
+      `Opened ${count(r.tabs, 'tab')}`,
+      `added ${count(r.groups, 'group')}`,
+      r.skipped ? `skipped ${count(r.skipped, 'tab')} already open` : '',
+      r.failed ? `${count(r.failed, 'tab')} could not be opened` : '',
+    ].filter(Boolean).join(', ') + '.');
+  } catch (e) {
+    $('import').disabled = false;
+    say(failure(e));
+  }
+});
+
 // ---- sorting log ---------------------------------------------------------
 
 function node(tag, cls, ...children) {

@@ -6,6 +6,7 @@ import {
   DAY, MENU, canNest, chain, childMap, subtree, pathName, isHardPinned, matchesQuery,
 } from '../../extension/lib/model.js';
 import { applyPlan, clean, gcGroups, heuristicPlan } from '../../extension/lib/plan.js';
+import { FORMAT, VERSION, mergeGroups, readWorkspace } from '../../extension/lib/workspace.js';
 
 export const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-opus-5-5' };
 const ARCHIVE_CAP = 1000;
@@ -54,6 +55,7 @@ export function createBackground({
   const ports = new Set();
   const status = { sorting: false, error: '' };
   let running = null;
+  let importing = 0; // workspace imports in progress
   // The row a sidebar last opened a context menu on, and the sidebar's port.
   let menu = { port: null, tabId: null, groupId: null };
 
@@ -104,6 +106,9 @@ export function createBackground({
   }
 
   function gc() {
+    // An import adds its groups first and their tabs after; until it is done,
+    // a group with nothing in it yet is not an empty one.
+    if (importing) return;
     const used = new Set();
     assign.forEach((a) => used.add(a.groupId));
     state.archive.forEach((a) => a.groupId && used.add(a.groupId));
@@ -173,6 +178,9 @@ export function createBackground({
 
   // Queue a tab if it has no group yet or has navigated to a different site.
   function consider(tab) {
+    // An import files its own tabs; the ones it leaves unfiled are considered
+    // when it finishes.
+    if (importing) return;
     if (!isSortable(tab) || tab.status === 'loading' || isFiled(tab)) return;
     queue.add(tab.id);
     scheduleClassify();
@@ -446,6 +454,94 @@ export function createBackground({
     await archiveTabs(stale);
     gc();
     changed();
+  }
+
+  // ---- workspace export and import ---------------------------------------
+
+  // The open web tabs and the groups they are filed in: enough to rebuild the
+  // sidebar in another browser. The archive and the settings are not included.
+  async function exportWorkspace() {
+    const tabs = (await browser.tabs.query({}))
+      .filter(isSortable)
+      .sort((a, b) => a.windowId - b.windowId || a.index - b.index);
+    const used = new Set();
+    const out = tabs.map((t) => {
+      const a = assign.get(t.id);
+      const filed = a && state.groups[a.groupId] ? a : null;
+      if (filed) chain(state.groups, filed.groupId).forEach((id) => used.add(id));
+      return {
+        url: t.url,
+        title: t.title || '',
+        groupId: filed ? filed.groupId : null,
+        pinned: !!t.pinned,
+        ...(t.pinned && pinRows.has(t.id) ? { pinRow: pinRows.get(t.id) } : {}),
+        ...(names.has(t.id) ? { name: names.get(t.id) } : {}),
+        ...(filed?.manual ? { manual: true } : {}),
+      };
+    });
+    return {
+      format: FORMAT,
+      version: VERSION,
+      exportedAt: now(),
+      // Groups kept alive only by archived tabs are left out.
+      groups: Object.values(state.groups)
+        .filter((g) => used.has(g.id))
+        .map(({ idleCollapsedAt, ...g }) => g),
+      tabs: out,
+    };
+  }
+
+  // Adds a workspace file to what is already here: its groups (merged with
+  // any of the same name) and its tabs, opened in `windowId`. Tabs are opened
+  // unloaded, so a large workspace costs nothing until its tabs are visited;
+  // pinned tabs cannot be, and load. A tab already open in the same group is
+  // skipped, so a repeated import adds nothing.
+  async function importWorkspace(data, windowId) {
+    const ws = readWorkspace(data);
+    const result = { groups: 0, tabs: 0, skipped: 0, failed: 0 };
+    const key = (url, groupId) => url + '\n' + (groupId || '');
+    importing += 1;
+    try {
+      const merged = mergeGroups(state.groups, state.counters, ws.groups);
+      state.groups = merged.groups;
+      state.counters = merged.counters;
+      result.groups = merged.added;
+      const groupFor = (id) => merged.ids.get(id) || null;
+
+      const here = await browser.tabs.query({});
+      const open = new Set(here.map((t) => key(t.url, assign.get(t.id)?.groupId)));
+      // Imported pin rows go below the rows already in the window.
+      const rowBase = 1 + Math.max(-1, ...here
+        .filter((t) => t.pinned && (windowId == null || t.windowId === windowId))
+        .map((t) => pinRows.get(t.id) ?? -1));
+      for (const t of ws.tabs) {
+        const groupId = groupFor(t.groupId);
+        if (open.has(key(t.url, groupId))) {
+          result.skipped += 1;
+          continue;
+        }
+        let tab;
+        try {
+          tab = await browser.tabs.create(t.pinned
+            ? { url: t.url, windowId, pinned: true, active: false }
+            : { url: t.url, windowId, active: false, discarded: true, ...(t.title ? { title: t.title } : {}) });
+        } catch {
+          result.failed += 1;
+          continue;
+        }
+        open.add(key(t.url, groupId));
+        if (groupId) setAssign(tab.id, groupId, hostOf(t.url), !!t.manual);
+        if (t.name) setName(tab.id, t.name);
+        if (t.pinRow != null) setPinRow(tab.id, rowBase + t.pinRow);
+        result.tabs += 1;
+      }
+    } finally {
+      importing -= 1;
+    }
+    gc();
+    changed();
+    (await browser.tabs.query({})).forEach(consider);
+    return result;
   }
 
   // ---- actions from the sidebar and options page -------------------------
@@ -736,7 +832,13 @@ export function createBackground({
       });
       push();
     });
-    browser.runtime.onMessage.addListener((msg) => handle(msg).catch(reportError));
+    // The options page. Export and import answer with a result, and an import
+    // that fails rejects so the page can say why.
+    browser.runtime.onMessage.addListener((msg) => {
+      if (msg.type === 'exportWorkspace') return exportWorkspace();
+      if (msg.type === 'importWorkspace') return importWorkspace(msg.data, msg.windowId);
+      return handle(msg).catch(reportError);
+    });
 
     browser.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || !changes.settings) return;
@@ -762,6 +864,7 @@ export function createBackground({
 
   return {
     start, handle, snapshot, runClassify, tidy, searchArchive, moveTargets,
+    exportWorkspace, importWorkspace,
     menuClick: (itemId, tabId) => menuClick(itemId, tabId).catch(reportError),
     state, assign, queue,
   };
