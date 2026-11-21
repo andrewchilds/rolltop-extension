@@ -10,7 +10,8 @@
     "test": "node --test \"test/*.test.js\"",
     "lint": "npm run build && web-ext lint --source-dir extension",
     "start": "npm run build && web-ext run --source-dir extension",
-    "package": "npm run build && web-ext build --source-dir extension --overwrite-dest"
+    "package": "npm run build && web-ext build --source-dir extension --overwrite-dest",
+    "fork:sync": "npm run build && rsync -a --delete --exclude .DS_Store extension/ \"${ROLLTOP_FIREFOX:-../rolltop-firefox}/browser/extensions/rolltop/extension/\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.11.0"

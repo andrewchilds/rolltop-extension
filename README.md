@@ -50,6 +50,20 @@ cd ../rolltop-firefox
 
 On a new machine: clone, check out `rolltop`, run `./mach --no-interactive bootstrap --application-choice browser_artifact_mode`, then recreate the local `mozconfig` below.
 
+### The bundled extension
+
+The fork ships this extension as a built-in add-on. `browser/extensions/rolltop/extension/` in the fork is a built copy of `extension/` here, committed there so the fork builds on its own. Do not edit the copy. After changing the extension:
+
+```sh
+npm run fork:sync                 # build, then copy extension/ into the fork
+cd ../rolltop-firefox
+./mach build faster && ./mach run
+```
+
+Then commit the refreshed copy in the fork. Set `ROLLTOP_FIREFOX` if the checkout is somewhere other than `../rolltop-firefox`.
+
+Firefox hides built-in add-ons from `about:addons`, so Rolltop's settings are reached from the toolbar button's right-click menu. The button sits in the extensions panel (puzzle-piece icon) by default.
+
 ### Build config
 
 | File | Tracked | Holds |
