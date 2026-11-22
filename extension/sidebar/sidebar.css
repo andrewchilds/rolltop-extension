@@ -24,6 +24,7 @@
   --off: #8A909C;
   --hover: rgba(21, 23, 28, 0.08);
   --pin-bg: rgba(21, 23, 28, 0.04);
+  --pin-solid: color-mix(in srgb, #15171C 4%, var(--bg)); /* --pin-bg over --bg */
   --on-shadow: 0 0 0 1px rgba(21, 23, 28, 0.08), 0 1px 3px rgba(21, 23, 28, 0.08);
   --neutral-tint: #DDE0E6;
 }
@@ -40,6 +41,7 @@
     --off: #6B717D;
     --hover: rgba(255, 255, 255, 0.1);
     --pin-bg: rgba(255, 255, 255, 0.05);
+    --pin-solid: color-mix(in srgb, #FFFFFF 5%, var(--bg));
     --on-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 3px rgba(0, 0, 0, 0.3);
     --neutral-tint: #3A3D46;
   }
@@ -161,8 +163,19 @@ nav {
   font-weight: 500;
 }
 .pin.current .pin-title { font-weight: 600; }
-.pin .act { position: absolute; top: 8px; right: 5px; background: var(--pin-bg); }
-.pin.current .act { background: var(--card); }
+/* The ellipsis covers the end of the title, on the tile's own color made
+   opaque, with a short fade before it. */
+.pin .act { --under: var(--pin-solid); position: absolute; top: 8px; right: 5px; background: var(--under); }
+.pin.current .act { --under: var(--card); }
+.pin .act::before {
+  content: '';
+  position: absolute;
+  inset: 0 100% 0 auto;
+  width: 10px;
+  background: linear-gradient(to right, transparent, var(--under));
+  pointer-events: none;
+}
+.pin .act:hover, .pin .act[aria-expanded="true"] { background: linear-gradient(var(--hover), var(--hover)), var(--under); }
 /* Alert count, on the corner of the favicon tile. */
 .pin .badge {
   position: absolute;
@@ -428,7 +441,7 @@ nav {
   pointer-events: none;
 }
 .tab.current .acts { background: linear-gradient(to right, transparent, var(--card) 12px); }
-.tab:hover .acts, .tab:focus-within .acts { opacity: 1; pointer-events: auto; }
+.tab:hover .acts, .tab:focus-within .acts, .tab .acts:has([aria-expanded="true"]) { opacity: 1; pointer-events: auto; }
 .tab.editing .acts, .tab.dragging .acts { display: none; }
 .act {
   display: flex;

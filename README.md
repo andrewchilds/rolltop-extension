@@ -7,7 +7,7 @@ A Firefox sidebar that groups, labels and archives tabs for you.
 - **Auto-tidy.** A group whose tabs have not been visited for 8 hours collapses (configurable), pinned groups included. Untouched tabs fade after 2 days, and after 5 they fold away behind a "Show older" row in their group; this applies in Pinned too. In Browsing they are archived after 14 days (configurable). Archived tabs are closed but stay searchable and can be reopened into their group. Closing a tab any other way archives it too.
 - **Favorites.** Pinned tabs sit in a grid at the top, in rows of one to six. Drag a tab or a pinned tile over the grid and the tiles make room: drop it within a row, or on a row's top or bottom edge to start a new one. 
 - **Pinned and Browsing.** Below Favorites the list has two sections with a line between them. Pinning a top-level group moves it, with everything nested in it, up into Pinned; dragging a group beside one on the other side moves it across too. Pinned is yours: nothing fades or archives, and the classifier cannot file tabs there, add or rename groups, or move a tab out when it navigates. New tabs are always sorted into Browsing.
-- **Right-click.** A tab row or pinned tile opens Firefox's own tab menu with **Archive tab** and **Move to group** added. A group row offers Rename, Pin, Collapse and Archive; the ellipsis on the row opens the same actions. A group you rename keeps its name, and a tab you move stays where you put it, whatever the classifier thinks.
+- **Right-click.** A tab row or pinned tile opens Firefox's own tab menu with **Archive tab** and **Move to group** added. A group row offers Rename, Pin, Collapse and Archive; the ellipsis on the row opens the same actions. A tab row or pinned tile also has an ellipsis, shown on hover, with Add to (or Remove from) Favorites, Rename and Close tab. A group you rename keeps its name, and a tab you move stays where you put it, whatever the classifier thinks.
 - **Middle-click.** A tab row or pinned tile closes that tab; a group row closes the group. Both are archived, so they can be reopened.
 - **Move to another browser.** Settings has **Export workspace**, which saves your open tabs and their groups to a file, and an import for that file. Importing adds to what is there: groups with the same name are merged, a tab already open in its group is skipped, and tabs open unloaded until you visit them (pinned tabs load). Archived tabs and settings are not in the file.
 - **Drag and drop.** Drag a tab onto a group to move it, or beside another tab to place it. Drag a group onto another to nest it (up to three levels), or to its top or bottom edge to reorder.
@@ -87,6 +87,8 @@ uBlock Origin does not run in private windows until that is allowed in its `abou
 
 The logo source is `branding/rolltop-logo.svg`. `npm run fork:brand` rasterizes it into `browser/branding/rolltop/` in the fork: window icons, the macOS app icon (`Assets.car` and `firefox.icns`), Windows `.ico` files and the about-page logo. It needs macOS with Xcode and ImageMagick. Commit the regenerated files in the fork.
 
+Error pages (no connection, page not found, certificate errors) show the logo in place of Mozilla's illustrations. The fork's branding `jar.mn` points their URLs at `about-logo.svg`, and `rolltop-neterror.css` sets its size.
+
 The product name is set in that directory's `configure.sh` and `locales/en-US/brand.ftl` and `brand.properties`.
 
 Still Mozilla's Nightly artwork, copied from `browser/branding/unofficial`: the document and disk-image icons, the DMG background, the Windows installer bitmaps and MSIX tiles, and the private-browsing icons. Replace them before distributing.
@@ -106,6 +108,7 @@ Upstream files the fork edits, which are where a rebase can conflict:
 |---|---|
 | `browser/extensions/moz.build` | Adds the `rolltop` directory. |
 | `browser/themes/shared/browser-shared.css` | Imports `rolltop.css`. |
+| `toolkit/themes/shared/aboutNetError.css` | Imports `rolltop-neterror.css`. |
 | `browser/components/tabbrowser/content/tabbrowser.js` | Hides the tab strip when `rolltop.hideTabStrip` is set. |
 | `browser/components/customizableui/CustomizableUI.sys.mjs` | Drops the flexible spaces and the account button from the default toolbar. |
 
