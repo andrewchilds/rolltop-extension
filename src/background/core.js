@@ -1,5 +1,6 @@
-// Background logic: tracks which group each tab belongs to, runs the
-// classifier, archives idle tabs and pushes snapshots to open sidebars.
+// Background logic: keeps the stored document of workspaces, groups and tab
+// records, binds open tabs to their records, runs the classifier, archives
+// idle tabs and pushes snapshots to open sidebars.
 // The browser API and the AI classifier are injected so this runs under Node.
 
 import {
@@ -7,6 +8,10 @@ import {
 } from '../../extension/lib/model.js';
 import { applyPlan, clean, gcGroups, heuristicPlan } from '../../extension/lib/plan.js';
 import { FORMAT, VERSION, mergeGroups, readWorkspace } from '../../extension/lib/workspace.js';
+import {
+  LEGACY_KEY, LEGACY_KEYS, SNAP_BEFORE_RESTORE, SNAP_PREFIX, backupOf, backupSummary, dayOf, isDocKey,
+  loadStore, newSpace, readBackup, snapKey, staleSnapshots, toKeys,
+} from '../../extension/lib/store.js';
 
 export const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-haiku-5-5' };
 const ARCHIVE_CAP = 1000;
@@ -15,11 +20,17 @@ const SEARCH_LIMIT = 50;
 const LOG_CAP = 20; // sorting runs kept for the options page
 // Archived groups older than this stay searchable but are not shown to the AI.
 const AI_RECENT = 30 * DAY;
-const TAB_KEY = 'tidy';
-const NAME_KEY = 'tidy-name';
-const ROW_KEY = 'tidy-row';
+const UID_KEY = 'uid'; // session value on a tab: the uid of its record
+const WS_KEY = 'ws'; // session value on a window: the workspace it shows
+// Version 1 kept a tab's group, name and favorites row in these session values.
+const V1_TAB = 'tidy';
+const V1_NAME = 'tidy-name';
+const V1_ROW = 'tidy-row';
 
-const isSortable = (tab) => /^https?:/.test(tab.url || '') && !tab.incognito;
+const isWeb = (url) => /^https?:/.test(url || '');
+const isSortable = (tab) => isWeb(tab.url) && !tab.incognito;
+// Private tabs are shown but never recorded.
+const tracked = (tab) => !tab.incognito;
 const hostOf = (url) => {
   try { return new URL(url).hostname; } catch { return ''; }
 };
@@ -30,32 +41,31 @@ const logUrl = (url) => {
     return (u.hostname + u.pathname).slice(0, 140);
   } catch { return ''; }
 };
+const keepIcon = (url) => ((url || '').startsWith('data:') ? '' : url || '');
+const randomId = (prefix) => prefix + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+const messageOf = (e) => (e && e.message) || String(e);
 
 export function createBackground({
   browser,
   classifyWithAI,
   now = () => Date.now(),
-  delay = { classify: 1200, push: 50, save: 400 },
+  delay = {},
+  // (prefix) -> a new id: 'w' workspace, 'g' group, 't' tab record, 'a' archive record.
+  newId = randomId,
 }) {
-  const state = {
-    groups: {},
-    archive: [],
-    log: [],
-    settings: { ...DEFAULTS },
-    counters: { nextGroup: 1, topLevel: 0, nextArchive: 1 },
-  };
-  // tabId -> { groupId, host, manual? }. `manual` marks a tab the user filed by
-  // hand; the classifier leaves it where it is, even after it navigates.
-  const assign = new Map();
-  const names = new Map(); // tabId -> the title the user gave the tab, shown in place of the page's
-  const pinRows = new Map(); // tabId -> the row of the pin grid a pinned tab was laid out in
+  const wait = { classify: 1200, push: 50, save: 400, retry: 5000, ...delay };
+  const doc = { meta: { version: 2, order: [], current: null }, spaces: {}, archives: {}, log: [] };
+  let settings = { ...DEFAULTS };
+  const byTab = new Map(); // tabId -> { ws, rec }: the open tab's workspace id and record
+  const open = new Map(); // record uid -> tabId
+  const active = new Map(); // windowId -> the workspace it shows
   const queue = new Set(); // tabIds waiting for a classifier run
-  const seen = new Map(); // tabId -> last known tab, since onRemoved only gives an id
   const archiving = new Set(); // tabIds being closed by archiveTabs
   const ports = new Set();
-  const status = { sorting: false, error: '' };
+  const status = { sorting: false, error: '', saveError: '' };
   let running = null;
   let importing = 0; // workspace imports in progress
+  let snapDay = ''; // the day the last daily snapshot was taken or found
   // The row a sidebar last opened a context menu on, and the sidebar's port.
   let menu = { port: null, tabId: null, groupId: null };
 
@@ -67,78 +77,449 @@ export function createBackground({
     };
   };
 
+  const space = (id) => doc.spaces[id];
+  const spaces = () => doc.meta.order.map(space);
+  const archiveOf = (id) => doc.archives[id] || (doc.archives[id] = []);
+  const groupsOfTab = (tabId) => space(byTab.get(tabId)?.ws)?.groups || {};
+  const homeOfGroup = (groupId) => spaces().find((s) => s.groups[groupId]) || null;
+  const groupIdOfTab = (tabId) => {
+    const e = byTab.get(tabId);
+    return e && e.rec.groupId && space(e.ws).groups[e.rec.groupId] ? e.rec.groupId : null;
+  };
+  const makeGroupId = () => newId('g');
+  // The workspace a window shows: the one last chosen there, else the one last
+  // chosen anywhere.
+  function activeOf(windowId) {
+    const id = active.get(windowId);
+    if (space(id)) return id;
+    return space(doc.meta.current) ? doc.meta.current : doc.meta.order[0];
+  }
+
   // ---- persistence -------------------------------------------------------
 
-  const save = debounce(() => {
-    browser.storage.local.set({
-      groups: state.groups,
-      archive: state.archive,
-      counters: state.counters,
-      log: state.log,
+  const written = new Map(); // storage key -> the JSON last stored under it
+  let saving = Promise.resolve();
+  let retry = null;
+
+  // Writes the keys whose content changed since they were last stored, and
+  // removes those of deleted workspaces. One set() call, so the keys of a
+  // change land together. A failure is shown in the sidebar and tried again.
+  function flush() {
+    saving = saving.then(async () => {
+      const keys = toKeys(doc);
+      const set = {};
+      const texts = new Map();
+      for (const [key, value] of Object.entries(keys)) {
+        const text = JSON.stringify(value);
+        if (written.get(key) === text) continue;
+        set[key] = JSON.parse(text);
+        texts.set(key, text);
+      }
+      const gone = [...written.keys()].filter((key) => !(key in keys));
+      try {
+        if (texts.size) await browser.storage.local.set(set);
+        if (gone.length) await browser.storage.local.remove(gone);
+      } catch (e) {
+        status.saveError = 'Rolltop could not save your tabs: ' + messageOf(e);
+        push();
+        if (!retry) retry = setTimeout(() => { retry = null; flush(); }, wait.retry);
+        return;
+      }
+      texts.forEach((text, key) => written.set(key, text));
+      gone.forEach((key) => written.delete(key));
+      if (status.saveError) {
+        status.saveError = '';
+        push();
+      }
     });
-  }, delay.save);
-
-  function setAssign(tabId, groupId, host, manual = false) {
-    const value = manual ? { groupId, host, manual: true } : { groupId, host };
-    assign.set(tabId, value);
-    // Stored with the tab in the session, so groups survive a restart.
-    browser.sessions.setTabValue(tabId, TAB_KEY, value).catch(() => {});
+    return saving;
   }
 
-  function setName(tabId, name) {
-    if (name) {
-      names.set(tabId, name);
-      browser.sessions.setTabValue(tabId, NAME_KEY, name).catch(() => {});
-    } else {
-      names.delete(tabId);
-      browser.sessions.removeTabValue(tabId, NAME_KEY).catch(() => {});
+  const save = debounce(flush, wait.save);
+
+  // One backup of the document per day it is in use, the last few kept.
+  async function dailySnapshot(data) {
+    const day = dayOf(now());
+    if (day === snapDay) return;
+    const all = Object.keys(await browser.storage.local.get(null));
+    if (!all.includes(snapKey(day))) {
+      await browser.storage.local.set({ [snapKey(day)]: data || backupOf(doc, now()) });
+      all.push(snapKey(day));
+    }
+    snapDay = day;
+    const stale = staleSnapshots(all);
+    if (stale.length) await browser.storage.local.remove(stale);
+  }
+
+  // ---- tabs and their records --------------------------------------------
+
+  function bind(tabId, wsId, rec) {
+    byTab.set(tabId, { ws: wsId, rec });
+    open.set(rec.uid, tabId);
+  }
+
+  function unbind(tabId) {
+    const e = byTab.get(tabId);
+    if (!e) return null;
+    byTab.delete(tabId);
+    if (open.get(e.rec.uid) === tabId) open.delete(e.rec.uid);
+    return e;
+  }
+
+  // Stored with the tab in the session, so its record is found after a restart.
+  function stamp(tabId, uid) {
+    browser.sessions.setTabValue(tabId, UID_KEY, uid).catch(() => {});
+  }
+
+  function makeRec(tab, extra = {}) {
+    return {
+      uid: newId('t'),
+      url: tab.url || '',
+      title: tab.title || '',
+      favIconUrl: keepIcon(tab.favIconUrl),
+      groupId: null,
+      favorite: !!tab.pinned,
+      ...extra,
+    };
+  }
+
+  // Brings a record up to date with its tab. Returns whether its address
+  // changed; a new title alone is stored with the next save.
+  function sync(rec, tab) {
+    const moved = !!tab.url && tab.url !== rec.url;
+    if (tab.url) rec.url = tab.url;
+    if (tab.title) rec.title = tab.title;
+    if (tab.favIconUrl) rec.favIconUrl = keepIcon(tab.favIconUrl);
+    return moved;
+  }
+
+  function file(tabId, groupId, host, manual = false) {
+    const e = byTab.get(tabId);
+    if (!e) return;
+    e.rec.groupId = groupId;
+    e.rec.host = host;
+    if (manual) e.rec.manual = true;
+    else delete e.rec.manual;
+  }
+
+  function unfile(rec) {
+    rec.groupId = null;
+    delete rec.host;
+    delete rec.manual;
+  }
+
+  function setFavorite(rec, favorite, home) {
+    rec.favorite = favorite;
+    if (!favorite) {
+      delete rec.row;
+      delete rec.slot;
+    } else if (rec.slot == null) {
+      rec.slot = 1 + Math.max(-1, ...home.tabs.map((r) => r.slot ?? -1));
     }
   }
 
-  function setPinRow(tabId, row) {
-    if (row == null) {
-      pinRows.delete(tabId);
-      browser.sessions.removeTabValue(tabId, ROW_KEY).catch(() => {});
-    } else {
-      pinRows.set(tabId, row);
-      browser.sessions.setTabValue(tabId, ROW_KEY, row).catch(() => {});
+  // Adds an archive record for a tab that is gone, however it went. The record
+  // keeps the tab's uid and everything the user set on it, so a tab the
+  // browser brings back (undo close, a restored window) gets it all again.
+  function shelve(wsId, rec) {
+    if (!isWeb(rec.url)) return;
+    const groupId = rec.groupId || null;
+    doc.archives[wsId] = [
+      {
+        id: newId('a'),
+        uid: rec.uid,
+        url: rec.url,
+        title: rec.title || rec.url,
+        favIconUrl: rec.favIconUrl || '',
+        groupId,
+        at: now(),
+        ...(rec.manual ? { manual: true } : {}),
+        ...(rec.name ? { name: rec.name } : {}),
+        ...(rec.favorite ? { favorite: true } : {}),
+        ...(rec.row != null ? { row: rec.row } : {}),
+      },
+      ...archiveOf(wsId).filter((a) => !(a.url === rec.url && a.groupId === groupId)),
+    ].slice(0, ARCHIVE_CAP);
+  }
+
+  // Takes the archive record made for the tab with this uid, if there is one.
+  function takeArchived(uid) {
+    for (const s of spaces()) {
+      const a = archiveOf(s.id).find((x) => x.uid === uid);
+      if (!a) continue;
+      doc.archives[s.id] = archiveOf(s.id).filter((x) => x !== a);
+      return { home: s, a };
     }
+    return null;
+  }
+
+  // What an archive record gives back to the record of a tab that returned.
+  function revive(rec, a, home) {
+    rec.uid = a.uid;
+    if (a.groupId && home.groups[a.groupId]) {
+      rec.groupId = a.groupId;
+      rec.host = hostOf(a.url);
+      if (a.manual) rec.manual = true;
+    }
+    if (a.name) rec.name = a.name;
+    if (a.favorite) setFavorite(rec, true, home);
+    if (a.row != null) rec.row = a.row;
+  }
+
+  // Gives a tab that just appeared a record in its window's workspace, at
+  // once, then asks the session whether it is a tab that was here before.
+  function track(tab) {
+    if (!tracked(tab) || tab.id == null || byTab.has(tab.id)) return;
+    const home = space(activeOf(tab.windowId));
+    const rec = makeRec(tab);
+    home.tabs.push(rec);
+    bind(tab.id, home.id, rec);
+    claim(tab, rec).catch(reportError);
+  }
+
+  async function claim(tab, rec) {
+    const uid = await browser.sessions.getTabValue(tab.id, UID_KEY).catch(() => null);
+    const e = byTab.get(tab.id);
+    if (!e || e.rec !== rec) return; // closed in the meantime
+    if (uid && uid !== rec.uid) {
+      const twin = open.has(uid) ? byTab.get(open.get(uid)) : null;
+      const back = twin ? null : takeArchived(uid);
+      if (twin && twin.ws === e.ws) {
+        // A duplicated tab carries its original's uid. It keeps its own, and
+        // starts out filed where the original is.
+        const { groupId, host, manual, name } = twin.rec;
+        Object.assign(rec, { groupId, ...(host ? { host } : {}), ...(manual ? { manual } : {}), ...(name ? { name } : {}) });
+      } else if (back) {
+        // Closed earlier and brought back by the browser.
+        if (back.home.id !== e.ws) {
+          space(e.ws).tabs = space(e.ws).tabs.filter((r) => r !== rec);
+          back.home.tabs.push(rec);
+          e.ws = back.home.id;
+        }
+        open.delete(rec.uid);
+        revive(rec, back.a, back.home);
+        open.set(rec.uid, tab.id);
+        await arrange(tab.windowId);
+      }
+    }
+    stamp(tab.id, rec.uid);
+    gc();
+    changed();
+  }
+
+  // Binds every open tab to its record: by the uid the tab carries, else to the
+  // record of the same page, else to a new one. `legacy` reads what version 1
+  // stored on the tab. Records whose tabs are not open are archived, not
+  // dropped: their groups stay, and a tab that turns up later takes its record
+  // back by uid.
+  async function reconcile(tabs, legacy) {
+    byTab.clear();
+    open.clear();
+    queue.clear();
+    const known = new Map();
+    for (const s of spaces()) s.tabs.forEach((rec) => known.set(rec.uid, { home: s, rec }));
+    const rest = [];
+    for (const t of tabs.filter(tracked)) {
+      const uid = await browser.sessions.getTabValue(t.id, UID_KEY).catch(() => null);
+      const hit = uid ? known.get(uid) : null;
+      if (hit && !open.has(uid)) {
+        bind(t.id, hit.home.id, hit.rec);
+        sync(hit.rec, t);
+      } else {
+        rest.push([t, uid]);
+      }
+    }
+    for (const [t, uid] of rest) {
+      let home = space(activeOf(t.windowId));
+      const free = (s) => (isWeb(t.url) ? s.tabs.find((r) => !open.has(r.uid) && r.url === t.url) : null);
+      let rec = free(home);
+      for (const s of rec ? [] : spaces()) {
+        rec = free(s);
+        if (rec) {
+          home = s;
+          break;
+        }
+      }
+      if (!rec) {
+        const back = uid ? takeArchived(uid) : null;
+        if (back) home = back.home;
+        rec = makeRec(t, legacy ? await legacyValues(t, home) : {});
+        if (back) revive(rec, back.a, home);
+        home.tabs.push(rec);
+      }
+      bind(t.id, home.id, rec);
+      sync(rec, t);
+      stamp(t.id, rec.uid);
+    }
+    for (const s of spaces()) {
+      const missing = s.tabs.filter((r) => !open.has(r.uid));
+      if (!missing.length) continue;
+      s.tabs = s.tabs.filter((r) => open.has(r.uid));
+      missing.reverse().forEach((r) => shelve(s.id, r));
+    }
+  }
+
+  async function legacyValues(tab, home) {
+    const value = (key) => browser.sessions.getTabValue(tab.id, key).catch(() => null);
+    const v = await value(V1_TAB);
+    const name = await value(V1_NAME);
+    const row = await value(V1_ROW);
+    return {
+      ...(v && home.groups[v.groupId] ? { groupId: v.groupId, host: v.host || '', ...(v.manual ? { manual: true } : {}) } : {}),
+      ...(name ? { name } : {}),
+      ...(tab.pinned && Number.isInteger(row) ? { row } : {}),
+    };
   }
 
   function gc() {
     // An import adds its groups first and their tabs after; until it is done,
     // a group with nothing in it yet is not an empty one.
     if (importing) return;
-    const used = new Set();
-    assign.forEach((a) => used.add(a.groupId));
-    state.archive.forEach((a) => a.groupId && used.add(a.groupId));
-    state.groups = gcGroups(state.groups, used);
+    // A group goes when no record in the document, open or archived, is filed
+    // in its subtree. What the browser reports as open plays no part.
+    for (const s of spaces()) {
+      const used = new Set();
+      s.tabs.forEach((r) => r.groupId && used.add(r.groupId));
+      archiveOf(s.id).forEach((a) => a.groupId && used.add(a.groupId));
+      s.groups = gcGroups(s.groups, used);
+    }
+  }
+
+  // ---- workspaces --------------------------------------------------------
+
+  const windowsOf = (tabs) => [...new Set(tabs.map((t) => t.windowId))];
+
+  // Makes a window show its workspace: that workspace's tabs are shown, with
+  // its favorites pinned, and every other workspace's tabs are hidden. Firefox
+  // hides neither a pinned tab nor the selected one, so the others' favorites
+  // are unpinned first (their records remember them) and a tab of this
+  // workspace is selected, `preferTabId` if given.
+  async function arrange(windowId, preferTabId) {
+    const wsId = activeOf(windowId);
+    const tabs = (await browser.tabs.query({})).filter((t) => t.windowId === windowId);
+    const mine = tabs.filter((t) => byTab.get(t.id)?.ws === wsId);
+    const others = tabs.filter((t) => byTab.has(t.id) && byTab.get(t.id).ws !== wsId);
+    const quiet = (p) => Promise.resolve(p).catch(() => {});
+
+    const hidden = mine.filter((t) => t.hidden).map((t) => t.id);
+    if (hidden.length) await quiet(browser.tabs.show(hidden));
+    const slot = (t) => byTab.get(t.id).rec.slot ?? Infinity;
+    for (const t of mine.filter((x) => byTab.get(x.id).rec.favorite && !x.pinned).sort((a, b) => slot(a) - slot(b))) {
+      await quiet(browser.tabs.update(t.id, { pinned: true }));
+    }
+
+    const current = tabs.find((t) => t.active);
+    const prefer = mine.find((t) => t.id === preferTabId);
+    if (prefer && !prefer.active) {
+      await quiet(browser.tabs.update(prefer.id, { active: true }));
+    } else if (!prefer && current && others.includes(current)) {
+      const last = [...mine].sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+      if (last) await quiet(browser.tabs.update(last.id, { active: true }));
+      else track(await browser.tabs.create({ windowId, active: true }));
+    }
+
+    for (const t of others.filter((x) => x.pinned)) await quiet(browser.tabs.update(t.id, { pinned: false }));
+    const hide = others.filter((t) => !t.hidden).map((t) => t.id);
+    if (hide.length) await quiet(browser.tabs.hide(hide));
+  }
+
+  async function arrangeAll() {
+    for (const windowId of windowsOf(await browser.tabs.query({}))) await arrange(windowId);
+  }
+
+  // Stored with the window in the session, so it shows the same workspace
+  // after a restart.
+  function remember(windowId) {
+    browser.sessions.setWindowValue(windowId, WS_KEY, active.get(windowId)).catch(() => {});
+  }
+
+  async function switchWorkspace(windowId, wsId, tabId) {
+    if (!space(wsId)) return;
+    active.set(windowId, wsId);
+    doc.meta.current = wsId;
+    remember(windowId);
+    await arrange(windowId, tabId);
+  }
+
+  // A window seen for the first time shows the workspace it was last showing,
+  // when the browser restored it, else the one last chosen anywhere.
+  async function learnWindow(windowId) {
+    if (windowId == null || active.has(windowId)) return;
+    active.set(windowId, activeOf(windowId));
+    const saved = await browser.sessions.getWindowValue(windowId, WS_KEY).catch(() => null);
+    if (saved && space(saved) && saved !== active.get(windowId)) {
+      active.set(windowId, saved);
+      await arrange(windowId);
+      push();
+    } else if (!saved) {
+      remember(windowId);
+    }
+  }
+
+  // Moves groups, with the tabs and archived tabs filed in them, from one
+  // workspace to another; `only` limits it to those group ids, and without it
+  // everything goes, unfiled tabs included. A group meeting one of the same
+  // name is merged into it.
+  function transfer(from, to, only) {
+    const goes = (groupId) => (only ? only.has(groupId) : true);
+    const moving = Object.values(from.groups)
+      .filter((g) => goes(g.id))
+      .map((g) => ({ ...g, parentId: g.parentId && goes(g.parentId) ? g.parentId : null }));
+    const merged = mergeGroups(to.groups, to.counters, moving, makeGroupId);
+    to.groups = merged.groups;
+    to.counters = merged.counters;
+    const mapped = (groupId) => (groupId ? merged.ids.get(groupId) || null : null);
+
+    const stay = [];
+    for (const rec of from.tabs) {
+      if (!goes(rec.groupId)) {
+        stay.push(rec);
+        continue;
+      }
+      rec.groupId = mapped(rec.groupId);
+      to.tabs.push(rec);
+      const e = byTab.get(open.get(rec.uid));
+      if (e) e.ws = to.id;
+    }
+    from.tabs = stay;
+    const kept = [];
+    const sent = [];
+    for (const a of archiveOf(from.id)) {
+      if (goes(a.groupId)) sent.push({ ...a, groupId: mapped(a.groupId) });
+      else kept.push(a);
+    }
+    doc.archives[from.id] = kept;
+    doc.archives[to.id] = [...archiveOf(to.id), ...sent].sort((a, b) => b.at - a.at).slice(0, ARCHIVE_CAP);
+    for (const g of moving) delete from.groups[g.id];
   }
 
   // ---- snapshots ---------------------------------------------------------
 
   async function snapshot() {
     const tabs = await browser.tabs.query({});
-    // Sidebars get per-group counts; archived tabs themselves are fetched by search.
-    const archiveCounts = {};
-    for (const a of state.archive) {
-      if (a.groupId) archiveCounts[a.groupId] = (archiveCounts[a.groupId] || 0) + 1;
-    }
+    const activeMap = {};
+    windowsOf(tabs).forEach((windowId) => { activeMap[windowId] = activeOf(windowId); });
     return {
       type: 'state',
       tabs: tabs.map((t) => {
-        const a = assign.get(t.id);
-        const groupId = a && state.groups[a.groupId] ? a.groupId : null;
+        const e = byTab.get(t.id);
+        const rec = e ? e.rec : null;
+        const groupId = groupIdOfTab(t.id);
+        // What the user made a favorite is one, whether or not it is pinned in
+        // the tab strip right now: a hidden workspace's favorites are not.
+        const pinned = rec ? !!rec.favorite : !!t.pinned;
         return {
           id: t.id,
           windowId: t.windowId,
+          // A private tab has no record; it shows in whichever workspace is open.
+          ws: e ? e.ws : null,
           index: t.index,
           title: t.title || '',
-          name: names.get(t.id) || '',
+          name: (rec && rec.name) || '',
           url: t.url || '',
           favIconUrl: t.favIconUrl || '',
-          pinned: !!t.pinned,
-          pinRow: t.pinned ? pinRows.get(t.id) ?? null : null,
+          pinned,
+          pinRow: pinned && rec ? rec.row ?? null : null,
           active: !!t.active,
           attention: !!t.attention,
           lastAccessed: t.lastAccessed || now(),
@@ -146,12 +527,19 @@ export function createBackground({
           pending: !groupId && isSortable(t),
         };
       }),
-      groups: state.groups,
-      archiveCounts,
-      auto: state.settings.auto,
-      ai: !!state.settings.apiKey,
+      // Sidebars get per-group counts; archived tabs themselves are fetched by search.
+      spaces: spaces().map((s) => {
+        const archiveCounts = {};
+        for (const a of archiveOf(s.id)) {
+          if (a.groupId) archiveCounts[a.groupId] = (archiveCounts[a.groupId] || 0) + 1;
+        }
+        return { id: s.id, name: s.name, groups: s.groups, archiveCounts };
+      }),
+      active: activeMap,
+      auto: settings.auto,
+      ai: !!settings.apiKey,
       sorting: status.sorting,
-      error: status.error,
+      error: status.saveError || status.error,
     };
   }
 
@@ -161,19 +549,20 @@ export function createBackground({
     ports.forEach((p) => {
       try { p.postMessage(snap); } catch { ports.delete(p); }
     });
-  }, delay.push);
+  }, wait.push);
 
   const changed = () => { save(); push(); };
 
   // ---- classification ----------------------------------------------------
 
-  const scheduleClassify = debounce(() => { runClassify(); }, delay.classify);
+  const scheduleClassify = debounce(() => { runClassify(); }, wait.classify);
 
   function isFiled(tab) {
-    const a = assign.get(tab.id);
-    if (!a || !state.groups[a.groupId]) return false;
+    const e = byTab.get(tab.id);
+    const groupId = groupIdOfTab(tab.id);
+    if (!groupId) return false;
     // Above the line a tab stays where it is, wherever it navigates.
-    return !!a.manual || a.host === hostOf(tab.url) || isHardPinned(state.groups, a.groupId);
+    return !!e.rec.manual || e.rec.host === hostOf(tab.url) || isHardPinned(space(e.ws).groups, groupId);
   }
 
   // Queue a tab if it has no group yet or has navigated to a different site.
@@ -181,87 +570,99 @@ export function createBackground({
     // An import files its own tabs; the ones it leaves unfiled are considered
     // when it finishes.
     if (importing) return;
-    if (!isSortable(tab) || tab.status === 'loading' || isFiled(tab)) return;
+    if (!byTab.has(tab.id) || !isSortable(tab) || tab.status === 'loading' || isFiled(tab)) return;
     queue.add(tab.id);
     scheduleClassify();
   }
 
-  // What the AI sees of the current tree: groups with open tabs, groups
+  // What the AI sees of a workspace's tree: groups with open tabs, groups
   // archived recently, and their ancestors. Older archived groups are left out
   // so request size tracks what is in use, not the size of the archive. Site
   // groups from the fallback are left out so it builds topic groups instead,
   // unless the user renamed one: that makes it a group they mean to keep.
   // Groups above the line are left out: the classifier has no say there.
-  function contextFor(allTabs) {
+  function contextFor(home) {
+    const groups = home.groups;
     const titles = new Map();
     const relevant = new Set();
     const add = (gid, title) => {
-      if (!state.groups[gid]) return;
-      chain(state.groups, gid).forEach((id) => relevant.add(id));
+      if (!groups[gid]) return;
+      chain(groups, gid).forEach((id) => relevant.add(id));
       if (!title) return;
       if (!titles.has(gid)) titles.set(gid, []);
       if (titles.get(gid).length < 6) titles.get(gid).push(title);
     };
-    allTabs.forEach((t) => {
-      const a = assign.get(t.id);
-      if (a) add(a.groupId, t.title);
-    });
+    home.tabs.forEach((rec) => add(rec.groupId, rec.title));
     const cutoff = now() - AI_RECENT;
-    state.archive.forEach((a) => {
+    archiveOf(home.id).forEach((a) => {
       if (a.at >= cutoff) add(a.groupId, a.title);
     });
     const hidden = (g) => !!g.site && !g.manual;
-    return Object.values(state.groups)
-      .filter((g) => relevant.has(g.id) && !hidden(g) && !isHardPinned(state.groups, g.id))
+    return Object.values(groups)
+      .filter((g) => relevant.has(g.id) && !hidden(g) && !isHardPinned(groups, g.id))
       .map((g) => ({
         id: g.id,
         name: g.name,
         label: g.label,
-        parentId: g.parentId && !hidden(state.groups[g.parentId]) ? g.parentId : null,
+        parentId: g.parentId && !hidden(groups[g.parentId]) ? g.parentId : null,
         titles: titles.get(g.id) || [],
       }));
   }
 
-  function apply(plan, batch, liveIds) {
-    const res = applyPlan(state.groups, state.counters, plan, liveIds);
-    state.groups = res.groups;
-    state.counters = res.counters;
+  function apply(home, plan, batch, liveIds) {
+    const res = applyPlan(home.groups, home.counters, plan, liveIds, makeGroupId);
+    home.groups = res.groups;
+    home.counters = res.counters;
     const done = new Set();
     for (const t of batch) {
       const gid = res.assign[t.id];
-      // Skip tabs the user moved by hand while the classifier was running.
-      if (!gid || assign.get(t.id)?.manual) continue;
-      setAssign(t.id, gid, hostOf(t.url));
+      const e = byTab.get(t.id);
+      // Skip tabs the user moved by hand, or to another workspace, while the
+      // classifier was running.
+      if (!gid || !e || e.ws !== home.id || e.rec.manual) continue;
+      file(t.id, gid, hostOf(t.url));
       done.add(t.id);
     }
     return done;
   }
 
+  // One workspace at a time: a tab is only ever filed in its own workspace's groups.
   async function classifyLoop() {
     while (queue.size) {
-      const ids = [...queue].slice(0, BATCH);
+      for (const id of [...queue]) {
+        if (!byTab.has(id)) queue.delete(id);
+      }
+      if (!queue.size) break;
+      const wsId = byTab.get([...queue][0]).ws;
+      const ids = [...queue].filter((id) => byTab.get(id).ws === wsId).slice(0, BATCH);
       ids.forEach((id) => queue.delete(id));
       const all = await browser.tabs.query({});
-      const batch = all.filter((t) => ids.includes(t.id) && isSortable(t) && !isFiled(t));
-      if (!batch.length) continue;
+      const inWs = (t) => byTab.get(t.id)?.ws === wsId;
+      const batch = all.filter((t) => ids.includes(t.id) && inWs(t) && isSortable(t) && !isFiled(t));
+      if (!batch.length || !space(wsId)) continue;
       status.sorting = true;
       push();
 
-      const useAI = !!(state.settings.apiKey && classifyWithAI);
-      const model = state.settings.model || DEFAULTS.model;
-      const context = useAI ? contextFor(all) : [];
-      const nameOf = (gid) => (state.groups[gid] ? pathName(state.groups, gid) : '');
+      const useAI = !!(settings.apiKey && classifyWithAI);
+      const model = settings.model || DEFAULTS.model;
+      const context = useAI ? contextFor(space(wsId)) : [];
+      const nameOf = (gid) => {
+        const groups = space(wsId)?.groups || {};
+        return groups[gid] ? pathName(groups, gid) : '';
+      };
+      const fromOf = (t) => (inWs({ id: t.openerTabId }) ? groupIdOfTab(t.openerTabId) : null);
       // One log entry per run: what the classifier was shown and what it did.
-      const before = new Map(Object.values(state.groups).map((g) => [g.id, g.name]));
+      const before = new Map(Object.values(space(wsId).groups).map((g) => [g.id, g.name]));
       const entry = {
         at: now(),
+        workspace: space(wsId).name,
         model: useAI ? model : '',
         error: '',
         groups: context.map((g) => ({ name: nameOf(g.id), label: g.label, titles: g.titles })),
         tabs: batch.map((t) => ({
           title: t.title || '',
           url: logUrl(t.url),
-          openedFrom: nameOf(assign.get(t.openerTabId)?.groupId),
+          openedFrom: nameOf(fromOf(t)),
         })),
         renames: [],
       };
@@ -270,38 +671,40 @@ export function createBackground({
       if (useAI) {
         try {
           plan = await classifyWithAI({
-            apiKey: state.settings.apiKey,
+            apiKey: settings.apiKey,
             model,
             groups: context,
             tabs: batch.map((t) => {
-              const from = assign.get(t.openerTabId)?.groupId;
+              const from = fromOf(t);
               return {
                 id: t.id,
                 title: t.title || '',
                 url: t.url,
-                openerGroupId: from && !isHardPinned(state.groups, from) ? from : null,
+                openerGroupId: from && !isHardPinned(space(wsId).groups, from) ? from : null,
               };
             }),
           });
           status.error = '';
         } catch (e) {
-          status.error = (e && e.message) || String(e);
+          status.error = messageOf(e);
           entry.error = status.error;
         }
       }
 
-      // Tabs may have closed while the classifier ran.
+      // Tabs may have closed, or the workspace been deleted, while the classifier ran.
+      const home = space(wsId);
+      if (!home) continue;
       const live = new Set((await browser.tabs.query({})).map((t) => t.id));
-      const liveIds = new Set(batch.map((t) => t.id).filter((id) => live.has(id)));
-      const done = plan ? apply(plan, batch, liveIds) : new Set();
+      const liveIds = new Set(batch.map((t) => t.id).filter((id) => live.has(id) && inWs({ id })));
+      const done = plan ? apply(home, plan, batch, liveIds) : new Set();
       // Anything the AI skipped, or everything when it is off or failed.
       const rest = batch.filter((t) => liveIds.has(t.id) && !done.has(t.id));
-      const bySite = rest.length ? apply(heuristicPlan(rest, state.groups), rest, liveIds) : new Set();
+      const bySite = rest.length ? apply(home, heuristicPlan(rest, home.groups), rest, liveIds) : new Set();
 
       const reasons = new Map(((plan && plan.assignments) || []).map((a) => [a.tabId, a.reason || '']));
       batch.forEach((t, i) => {
         const by = done.has(t.id) ? 'ai' : bySite.has(t.id) ? 'site' : '';
-        const gid = by ? assign.get(t.id)?.groupId : null;
+        const gid = by ? groupIdOfTab(t.id) : null;
         Object.assign(entry.tabs[i], {
           by,
           group: nameOf(gid),
@@ -310,17 +713,17 @@ export function createBackground({
         });
       });
       before.forEach((name, id) => {
-        const g = state.groups[id];
+        const g = home.groups[id];
         if (g && g.name !== name) entry.renames.push({ from: name, to: g.name });
       });
-      state.log = [entry, ...state.log].slice(0, LOG_CAP);
+      doc.log = [entry, ...doc.log].slice(0, LOG_CAP);
     }
   }
 
   function runClassify() {
     if (!running) {
       running = classifyLoop()
-        .catch((e) => { status.error = (e && e.message) || String(e); })
+        .catch((e) => { status.error = messageOf(e); })
         .finally(() => {
           running = null;
           status.sorting = false;
@@ -334,8 +737,9 @@ export function createBackground({
   async function resortAll() {
     const tabs = await browser.tabs.query({});
     tabs.filter(isSortable).forEach((t) => {
-      if (assign.get(t.id)?.manual) return;
-      assign.delete(t.id);
+      const e = byTab.get(t.id);
+      if (!e || e.rec.manual) return;
+      unfile(e.rec);
       queue.add(t.id);
     });
     await runClassify();
@@ -345,26 +749,8 @@ export function createBackground({
 
   // ---- archive -----------------------------------------------------------
 
-  function expand(groupId) {
-    chain(state.groups, groupId).forEach((id) => { state.groups[id].collapsed = false; });
-  }
-
-  // Adds an archive record for a tab that is going away, however it was closed.
-  function record(t) {
-    const filed = assign.get(t.id);
-    const groupId = filed?.groupId || null;
-    state.archive = state.archive.filter((a) => !(a.url === t.url && a.groupId === groupId));
-    state.archive.unshift({
-      id: 'a' + state.counters.nextArchive++,
-      url: t.url,
-      title: t.title || t.url,
-      favIconUrl: (t.favIconUrl || '').startsWith('data:') ? '' : t.favIconUrl || '',
-      groupId,
-      at: now(),
-      ...(filed?.manual ? { manual: true } : {}),
-      ...(names.has(t.id) ? { name: names.get(t.id) } : {}),
-    });
-    state.archive = state.archive.slice(0, ARCHIVE_CAP);
+  function expand(home, groupId) {
+    chain(home.groups, groupId).forEach((id) => { home.groups[id].collapsed = false; });
   }
 
   // Closes tabs, keeping a searchable record of the ones that can be reopened.
@@ -372,48 +758,57 @@ export function createBackground({
     if (!tabs.length) return;
     const all = await browser.tabs.query({});
     const closing = new Set(tabs.map((t) => t.id));
-    // Never close a window by emptying it.
-    const windows = new Set(tabs.map((t) => t.windowId));
-    for (const windowId of windows) {
-      if (!all.some((t) => t.windowId === windowId && !closing.has(t.id))) {
-        await browser.tabs.create({ windowId });
+    // Never empty a window of the tabs it is showing: that would close it, or
+    // leave it on a hidden tab of another workspace.
+    for (const windowId of windowsOf(tabs)) {
+      const wsId = activeOf(windowId);
+      const shown = (t) => t.windowId === windowId && (!byTab.has(t.id) || byTab.get(t.id).ws === wsId);
+      if (!all.some((t) => shown(t) && !closing.has(t.id))) {
+        track(await browser.tabs.create({ windowId }));
       }
     }
     for (const t of tabs) {
       archiving.add(t.id);
-      if (isSortable(t)) record(t);
+      const e = byTab.get(t.id);
+      if (e) shelve(e.ws, e.rec);
     }
-    // Keep the groups alive through the tabs.onRemoved cleanup.
-    save();
     await browser.tabs.remove(tabs.map((t) => t.id));
   }
 
-  async function reopen(records, windowId) {
+  // Opens archived tabs again, in their own workspace.
+  async function reopen(home, records, windowId) {
     const ids = new Set(records.map((r) => r.id));
-    state.archive = state.archive.filter((a) => !ids.has(a.id));
+    doc.archives[home.id] = archiveOf(home.id).filter((a) => !ids.has(a.id));
+    if (windowId != null && activeOf(windowId) !== home.id) await switchWorkspace(windowId, home.id);
     let first = true;
     for (const r of records) {
       const tab = await browser.tabs.create({ url: r.url, windowId, active: first });
       first = false;
-      if (r.name) setName(tab.id, r.name);
-      if (r.groupId && state.groups[r.groupId]) {
-        setAssign(tab.id, r.groupId, hostOf(r.url), !!r.manual);
-        expand(r.groupId);
+      track(tab);
+      const e = byTab.get(tab.id);
+      if (!e) continue;
+      if (r.name) e.rec.name = r.name;
+      if (r.groupId && space(e.ws).groups[r.groupId]) {
+        file(tab.id, r.groupId, hostOf(r.url), !!r.manual);
+        expand(space(e.ws), r.groupId);
       }
     }
   }
 
+  // Archived tabs matching a query, across every workspace.
   function searchArchive(query) {
     const q = (query || '').trim().toLowerCase();
     if (!q) return [];
     const out = [];
-    const openUrls = new Set([...seen.values()].map((t) => t.url));
-    for (const a of state.archive) {
-      // A page that is open again would only duplicate the open result.
-      if (openUrls.has(a.url)) continue;
-      if (!matchesQuery(`${a.name || ''} ${a.title}`, a.url, q)) continue;
-      out.push(a);
-      if (out.length >= SEARCH_LIMIT) break;
+    // A page that is open again would only duplicate the open result.
+    const openUrls = new Set([...byTab.values()].map((e) => e.rec.url));
+    for (const s of spaces()) {
+      for (const a of archiveOf(s.id)) {
+        if (openUrls.has(a.url)) continue;
+        if (!matchesQuery(`${a.name || ''} ${a.title}`, a.url, q)) continue;
+        out.push({ ...a, ws: s.id });
+        if (out.length >= SEARCH_LIMIT) return out;
+      }
     }
     return out;
   }
@@ -422,16 +817,16 @@ export function createBackground({
   // been visited for `collapseHours`. Once per idle spell: a group opened by
   // hand afterwards stays open until it is visited and goes idle again.
   function collapseIdle(tabs) {
-    const cutoff = now() - state.settings.collapseHours * DAY / 24;
-    const fresh = new Map();
+    const cutoff = now() - settings.collapseHours * DAY / 24;
+    const fresh = new Map(); // group -> when it was last visited
     for (const t of tabs) {
-      const a = assign.get(t.id);
-      if (!a || !state.groups[a.groupId]) continue;
+      const groupId = groupIdOfTab(t.id);
+      if (!groupId) continue;
+      const groups = groupsOfTab(t.id);
       const seen = t.active || t.audible ? now() : t.lastAccessed || now();
-      for (const id of chain(state.groups, a.groupId)) fresh.set(id, Math.max(fresh.get(id) || 0, seen));
+      for (const id of chain(groups, groupId)) fresh.set(groups[id], Math.max(fresh.get(groups[id]) || 0, seen));
     }
-    for (const [id, seen] of fresh) {
-      const g = state.groups[id];
+    for (const [g, seen] of fresh) {
       if (g.collapsed || seen > cutoff || (g.idleCollapsedAt || 0) >= seen) continue;
       g.collapsed = true;
       g.idleCollapsedAt = now();
@@ -441,42 +836,44 @@ export function createBackground({
   // Auto-tidy: collapse groups left alone for `collapseHours`, and archive
   // tabs nobody has looked at for `archiveDays`.
   async function tidy() {
-    if (!state.settings.auto) return;
-    const cutoff = now() - state.settings.archiveDays * DAY;
+    if (!settings.auto) return;
+    const cutoff = now() - settings.archiveDays * DAY;
     const tabs = await browser.tabs.query({});
     collapseIdle(tabs);
     const stale = tabs.filter((t) => {
-      if (t.pinned || t.active || t.audible || !isSortable(t)) return false;
+      const e = byTab.get(t.id);
+      if (!e || e.rec.favorite || t.pinned || t.active || t.audible || !isSortable(t)) return false;
       if ((t.lastAccessed || now()) > cutoff) return false;
-      const a = assign.get(t.id);
-      return !(a && isHardPinned(state.groups, a.groupId));
+      const groupId = groupIdOfTab(t.id);
+      return !(groupId && isHardPinned(space(e.ws).groups, groupId));
     });
     await archiveTabs(stale);
     gc();
     changed();
   }
 
-  // ---- workspace export and import ---------------------------------------
+  // ---- workspace files and backups ---------------------------------------
 
-  // The open web tabs and the groups they are filed in: enough to rebuild the
-  // sidebar in another browser. The archive and the settings are not included.
-  async function exportWorkspace() {
+  // One workspace's open web tabs and the groups they are filed in: enough to
+  // rebuild it in another browser. Its archive and the settings are not included.
+  async function exportWorkspace(windowId) {
+    const home = space(activeOf(windowId));
     const tabs = (await browser.tabs.query({}))
-      .filter(isSortable)
+      .filter((t) => isSortable(t) && byTab.get(t.id)?.ws === home.id)
       .sort((a, b) => a.windowId - b.windowId || a.index - b.index);
     const used = new Set();
     const out = tabs.map((t) => {
-      const a = assign.get(t.id);
-      const filed = a && state.groups[a.groupId] ? a : null;
-      if (filed) chain(state.groups, filed.groupId).forEach((id) => used.add(id));
+      const { rec } = byTab.get(t.id);
+      const groupId = groupIdOfTab(t.id);
+      if (groupId) chain(home.groups, groupId).forEach((id) => used.add(id));
       return {
         url: t.url,
         title: t.title || '',
-        groupId: filed ? filed.groupId : null,
-        pinned: !!t.pinned,
-        ...(t.pinned && pinRows.has(t.id) ? { pinRow: pinRows.get(t.id) } : {}),
-        ...(names.has(t.id) ? { name: names.get(t.id) } : {}),
-        ...(filed?.manual ? { manual: true } : {}),
+        groupId,
+        pinned: !!rec.favorite,
+        ...(rec.favorite && rec.row != null ? { pinRow: rec.row } : {}),
+        ...(rec.name ? { name: rec.name } : {}),
+        ...(groupId && rec.manual ? { manual: true } : {}),
       };
     });
     return {
@@ -484,39 +881,37 @@ export function createBackground({
       version: VERSION,
       exportedAt: now(),
       // Groups kept alive only by archived tabs are left out.
-      groups: Object.values(state.groups)
+      groups: Object.values(home.groups)
         .filter((g) => used.has(g.id))
         .map(({ idleCollapsedAt, ...g }) => g),
       tabs: out,
     };
   }
 
-  // Adds a workspace file to what is already here: its groups (merged with
-  // any of the same name) and its tabs, opened in `windowId`. Tabs are opened
-  // unloaded, so a large workspace costs nothing until its tabs are visited;
-  // pinned tabs cannot be, and load. A tab already open in the same group is
-  // skipped, so a repeated import adds nothing.
+  // Adds a workspace file to the workspace `windowId` shows: its groups
+  // (merged with any of the same name) and its tabs, opened in that window.
+  // Tabs are opened unloaded, so a large file costs nothing until its tabs are
+  // visited; pinned tabs cannot be, and load. A tab already open in the same
+  // group is skipped, so a repeated import adds nothing.
   async function importWorkspace(data, windowId) {
     const ws = readWorkspace(data);
     const result = { groups: 0, tabs: 0, skipped: 0, failed: 0 };
     const key = (url, groupId) => url + '\n' + (groupId || '');
+    const home = space(activeOf(windowId));
     importing += 1;
     try {
-      const merged = mergeGroups(state.groups, state.counters, ws.groups);
-      state.groups = merged.groups;
-      state.counters = merged.counters;
+      const merged = mergeGroups(home.groups, home.counters, ws.groups, makeGroupId);
+      home.groups = merged.groups;
+      home.counters = merged.counters;
       result.groups = merged.added;
       const groupFor = (id) => merged.ids.get(id) || null;
 
-      const here = await browser.tabs.query({});
-      const open = new Set(here.map((t) => key(t.url, assign.get(t.id)?.groupId)));
-      // Imported pin rows go below the rows already in the window.
-      const rowBase = 1 + Math.max(-1, ...here
-        .filter((t) => t.pinned && (windowId == null || t.windowId === windowId))
-        .map((t) => pinRows.get(t.id) ?? -1));
+      const have = new Set(home.tabs.map((r) => key(r.url, r.groupId)));
+      // Imported pin rows go below the rows already there.
+      const rowBase = 1 + Math.max(-1, ...home.tabs.filter((r) => r.favorite).map((r) => r.row ?? -1));
       for (const t of ws.tabs) {
         const groupId = groupFor(t.groupId);
-        if (open.has(key(t.url, groupId))) {
+        if (have.has(key(t.url, groupId))) {
           result.skipped += 1;
           continue;
         }
@@ -529,10 +924,17 @@ export function createBackground({
           result.failed += 1;
           continue;
         }
-        open.add(key(t.url, groupId));
-        if (groupId) setAssign(tab.id, groupId, hostOf(t.url), !!t.manual);
-        if (t.name) setName(tab.id, t.name);
-        if (t.pinRow != null) setPinRow(tab.id, rowBase + t.pinRow);
+        have.add(key(t.url, groupId));
+        track(tab);
+        const e = byTab.get(tab.id);
+        if (e) {
+          // The page has not loaded, so the record takes the file's word for it.
+          Object.assign(e.rec, { url: t.url, title: t.title || e.rec.title });
+          if (groupId) file(tab.id, groupId, hostOf(t.url), !!t.manual);
+          if (t.name) e.rec.name = t.name;
+          if (t.pinned) setFavorite(e.rec, true, home);
+          if (t.pinRow != null) e.rec.row = rowBase + t.pinRow;
+        }
         result.tabs += 1;
       }
     } finally {
@@ -542,6 +944,42 @@ export function createBackground({
     changed();
     (await browser.tabs.query({})).forEach(consider);
     return result;
+  }
+
+  const exportBackup = () => backupOf(doc, now());
+
+  // Replaces the document with a backup's. No tab is closed or opened: open
+  // tabs take their records in the backup, tabs it does not know get new ones,
+  // and its tabs that are not open go to the archive, where they can be
+  // reopened. The document being replaced is kept so this can be undone.
+  async function restoreBackup(data) {
+    const next = readBackup(data, newId);
+    await flush();
+    await browser.storage.local.set({ [SNAP_BEFORE_RESTORE]: backupOf(doc, now()) });
+    Object.assign(doc, next);
+    const tabs = await browser.tabs.query({});
+    await reconcile(tabs, false);
+    await arrangeAll();
+    gc();
+    push();
+    await flush();
+    tabs.forEach(consider);
+    return backupSummary(data);
+  }
+
+  async function listSnapshots() {
+    const all = await browser.storage.local.get(null);
+    return Object.keys(all)
+      .filter((key) => key.startsWith(SNAP_PREFIX))
+      .sort()
+      .reverse()
+      .map((key) => ({ key, ...backupSummary(all[key]) }));
+  }
+
+  async function restoreSnapshot(key) {
+    const found = await browser.storage.local.get(key);
+    if (!String(key).startsWith(SNAP_PREFIX) || !found[key]) throw new Error('That snapshot is no longer kept.');
+    return restoreBackup(found[key]);
   }
 
   // ---- actions from the sidebar and options page -------------------------
@@ -556,19 +994,31 @@ export function createBackground({
   }
 
   async function handle(msg) {
-    const g = msg.groupId ? state.groups[msg.groupId] : null;
+    const home = msg.groupId ? homeOfGroup(msg.groupId) : null;
+    const g = home ? home.groups[msg.groupId] : null;
+    const e = msg.tabId != null ? byTab.get(msg.tabId) : null;
     switch (msg.type) {
-      case 'activate':
-        await browser.tabs.update(msg.tabId, { active: true });
+      case 'activate': {
+        const tab = await browser.tabs.get(msg.tabId);
+        // A tab in another workspace brings its workspace with it.
+        if (e && activeOf(tab.windowId) !== e.ws) await switchWorkspace(tab.windowId, e.ws, tab.id);
+        else await browser.tabs.update(msg.tabId, { active: true });
+        if (msg.windowId != null && tab.windowId !== msg.windowId) {
+          await browser.windows.update(tab.windowId, { focused: true });
+        }
         break;
+      }
       case 'closeTab': {
         const tab = await browser.tabs.get(msg.tabId);
         await archiveTabs([tab]);
         break;
       }
       case 'pinTab':
+        if (e) {
+          setFavorite(e.rec, !!msg.pinned, space(e.ws));
+          delete e.rec.row;
+        }
         await browser.tabs.update(msg.tabId, { pinned: !!msg.pinned });
-        setPinRow(msg.tabId, null);
         break;
       // The pin grid as arranged by a drop: rows of tab ids. Tabs not pinned
       // yet are pinned, and the tab strip takes the same order.
@@ -579,26 +1029,29 @@ export function createBackground({
           for (const tabId of row) {
             const tab = await browser.tabs.get(tabId).catch(() => null);
             if (!tab || tab.id == null || tab.windowId !== msg.windowId) continue;
+            const rec = byTab.get(tabId)?.rec;
+            if (rec) Object.assign(rec, { favorite: true, row: r, slot: index });
             if (!tab.pinned) await browser.tabs.update(tabId, { pinned: true });
             await browser.tabs.move(tabId, { index });
-            setPinRow(tabId, r);
             index += 1;
           }
         }
         break;
       }
       case 'newTab':
-        await browser.tabs.create({ windowId: msg.windowId, pinned: !!msg.pinned });
+        track(await browser.tabs.create({ windowId: msg.windowId, pinned: !!msg.pinned }));
         break;
       case 'toggleGroup':
         if (g) g.collapsed = !g.collapsed;
         break;
       case 'showGroup':
-        if (g) expand(g.id);
+        if (!g) break;
+        expand(home, g.id);
+        if (msg.windowId != null && activeOf(msg.windowId) !== home.id) await switchWorkspace(msg.windowId, home.id);
         break;
       // Moves a top-level group across the line, with everything nested in it.
       case 'pinGroup':
-        if (g && chain(state.groups, g.id).length === 1) g.pinned = !g.pinned;
+        if (g && chain(home.groups, g.id).length === 1) g.pinned = !g.pinned;
         break;
       case 'renameGroup': {
         const name = clean(msg.name, 40);
@@ -608,27 +1061,31 @@ export function createBackground({
         break;
       }
       // An empty name goes back to the page's own title.
-      case 'renameTab':
-        setName(msg.tabId, clean(msg.name, 80));
+      case 'renameTab': {
+        if (!e) break;
+        const name = clean(msg.name, 80);
+        if (name) e.rec.name = name;
+        else delete e.rec.name;
         break;
+      }
       case 'moveTab': {
-        if (!g) break;
+        if (!g || !e || e.ws !== home.id) break;
         const tab = await browser.tabs.get(msg.tabId);
-        setAssign(tab.id, g.id, hostOf(tab.url), true);
+        file(tab.id, g.id, hostOf(tab.url), true);
         queue.delete(tab.id);
-        expand(g.id);
+        expand(home, g.id);
         // Dropped beside another tab: take that place in the tab strip too.
         if (msg.nearTabId != null) await placeBeside(tab, msg.nearTabId, msg.after);
         break;
       }
       // Drag and drop of a group: beside another group, or into it.
       case 'moveGroup': {
-        const target = state.groups[msg.targetId];
+        const target = home ? home.groups[msg.targetId] : null;
         if (!g || !target || g === target) break;
         const into = msg.where === 'into';
         const parentId = into ? target.id : target.parentId || null;
-        if (!canNest(state.groups, g.id, parentId)) break;
-        const sibs = (childMap(state.groups).get(parentId) || []).filter((s) => s !== g);
+        if (!canNest(home.groups, g.id, parentId)) break;
+        const sibs = (childMap(home.groups).get(parentId) || []).filter((s) => s !== g);
         let prev = sibs[sibs.length - 1];
         let next;
         if (!into) {
@@ -641,52 +1098,120 @@ export function createBackground({
         // At the top level it lands on the target's side of the line; nested,
         // it is on its parent's.
         g.pinned = parentId == null && !!target.pinned;
-        if (into) expand(target.id);
+        if (into) expand(home, target.id);
         break;
       }
       case 'newGroupForTab': {
+        if (!e) break;
+        const own = space(e.ws);
         const tab = await browser.tabs.get(msg.tabId);
-        const res = applyPlan(state.groups, state.counters, {
+        const res = applyPlan(own.groups, own.counters, {
           newGroups: [{ ref: 'new', name: 'New group', label: 'Custom', parent: null }],
           assignments: [{ tabId: tab.id, group: 'new' }],
-        }, new Set([tab.id]));
-        state.groups = res.groups;
-        state.counters = res.counters;
-        state.groups[res.assign[tab.id]].manual = true;
-        setAssign(tab.id, res.assign[tab.id], hostOf(tab.url), true);
+        }, new Set([tab.id]), makeGroupId);
+        own.groups = res.groups;
+        own.counters = res.counters;
+        own.groups[res.assign[tab.id]].manual = true;
+        file(tab.id, res.assign[tab.id], hostOf(tab.url), true);
         queue.delete(tab.id);
         break;
       }
       case 'archiveGroup': {
         if (!g) break;
-        const ids = subtree(state.groups, g.id);
-        ids.forEach((id) => { state.groups[id].pinned = false; });
+        const ids = subtree(home.groups, g.id);
+        ids.forEach((id) => { home.groups[id].pinned = false; });
         const tabs = await browser.tabs.query({});
-        // Pinned tabs stay: they live in the pin grid, not in the group's rows.
-        await archiveTabs(tabs.filter((t) => !t.pinned && ids.includes(assign.get(t.id)?.groupId)));
+        // Favorites stay: they live in the pin grid, not in the group's rows.
+        await archiveTabs(tabs.filter((t) => {
+          const own = byTab.get(t.id);
+          return own && own.ws === home.id && !own.rec.favorite && ids.includes(own.rec.groupId);
+        }));
         break;
       }
       case 'reopenGroup': {
         if (!g) break;
-        const ids = subtree(state.groups, g.id);
-        await reopen(state.archive.filter((a) => ids.includes(a.groupId)).reverse(), msg.windowId);
+        const ids = subtree(home.groups, g.id);
+        await reopen(home, archiveOf(home.id).filter((a) => ids.includes(a.groupId)).reverse(), msg.windowId);
         break;
       }
       case 'reopenTab': {
-        const rec = state.archive.find((a) => a.id === msg.archiveId);
-        if (rec) await reopen([rec], msg.windowId);
+        const from = spaces().find((s) => archiveOf(s.id).some((a) => a.id === msg.archiveId));
+        if (from) await reopen(from, [archiveOf(from.id).find((a) => a.id === msg.archiveId)], msg.windowId);
+        break;
+      }
+      case 'switchWorkspace':
+        await switchWorkspace(msg.windowId, msg.wsId);
+        break;
+      case 'newWorkspace': {
+        const id = newId('w');
+        const taken = new Set(spaces().map((s) => s.name));
+        let n = doc.meta.order.length + 1;
+        while (taken.has('Workspace ' + n)) n += 1;
+        doc.spaces[id] = newSpace(id, clean(msg.name, 30) || 'Workspace ' + n);
+        doc.archives[id] = [];
+        doc.meta.order.push(id);
+        await switchWorkspace(msg.windowId, id);
+        break;
+      }
+      case 'renameWorkspace': {
+        const name = clean(msg.name, 30);
+        if (space(msg.wsId) && name) space(msg.wsId).name = name;
+        break;
+      }
+      // Nothing in a deleted workspace is lost: its groups, tabs and archive
+      // join the workspace next to it.
+      case 'deleteWorkspace': {
+        const from = space(msg.wsId);
+        const at = doc.meta.order.indexOf(msg.wsId);
+        if (!from || doc.meta.order.length < 2) break;
+        const to = space(doc.meta.order[at + 1] ?? doc.meta.order[at - 1]);
+        transfer(from, to);
+        doc.meta.order.splice(at, 1);
+        delete doc.spaces[from.id];
+        delete doc.archives[from.id];
+        if (doc.meta.current === from.id) doc.meta.current = to.id;
+        active.forEach((wsId, windowId) => {
+          if (wsId !== from.id) return;
+          active.set(windowId, to.id);
+          remember(windowId);
+        });
+        await arrangeAll();
+        break;
+      }
+      // The tab leaves its group behind: groups belong to one workspace.
+      case 'moveTabToWorkspace': {
+        const to = space(msg.wsId);
+        if (!e || !to || e.ws === to.id) break;
+        const tab = await browser.tabs.get(msg.tabId);
+        space(e.ws).tabs = space(e.ws).tabs.filter((r) => r !== e.rec);
+        unfile(e.rec);
+        delete e.rec.row;
+        delete e.rec.slot;
+        if (e.rec.favorite) setFavorite(e.rec, true, to);
+        to.tabs.push(e.rec);
+        e.ws = to.id;
+        queue.delete(tab.id);
+        await arrange(tab.windowId);
+        consider(tab);
+        break;
+      }
+      case 'moveGroupToWorkspace': {
+        const to = space(msg.wsId);
+        if (!g || !to || to === home) break;
+        transfer(home, to, new Set(subtree(home.groups, g.id)));
+        await arrangeAll();
         break;
       }
       case 'setAuto':
-        state.settings.auto = !!msg.auto;
-        await browser.storage.local.set({ settings: state.settings });
-        if (state.settings.auto) await tidy();
+        settings.auto = !!msg.auto;
+        await browser.storage.local.set({ settings });
+        if (settings.auto) await tidy();
         break;
       case 'resort':
         await resortAll();
         break;
       case 'clearLog':
-        state.log = [];
+        doc.log = [];
         break;
       default:
         return;
@@ -697,16 +1222,20 @@ export function createBackground({
 
   // ---- context menu ------------------------------------------------------
 
-  // Groups a tab can be moved to: the ones holding open tabs, in sidebar order.
+  // Groups a tab can be moved to: the ones in its workspace holding open tabs,
+  // in sidebar order.
   function moveTargets(tabId) {
-    const current = assign.get(tabId)?.groupId;
+    const e = byTab.get(tabId);
+    if (!e) return [];
+    const { groups, tabs } = space(e.ws);
+    const current = groupIdOfTab(tabId);
     const live = new Set();
-    assign.forEach((a) => chain(state.groups, a.groupId).forEach((id) => live.add(id)));
-    const kids = childMap(state.groups);
+    tabs.forEach((r) => chain(groups, r.groupId).forEach((id) => live.add(id)));
+    const kids = childMap(groups);
     const out = [];
     const walk = (g) => {
       if (!live.has(g.id)) return;
-      if (g.id !== current) out.push({ id: g.id, title: pathName(state.groups, g.id) });
+      if (g.id !== current) out.push({ id: g.id, title: pathName(groups, g.id) });
       (kids.get(g.id) || []).forEach(walk);
     };
     (kids.get(null) || []).forEach(walk);
@@ -717,14 +1246,14 @@ export function createBackground({
   async function menuClick(itemId, tabId = menu.tabId) {
     const { groupId, port } = menu;
     const edit = (id) => {
-      if (!state.groups[id] || !port) return;
+      if (!homeOfGroup(id) || !port) return;
       try { port.postMessage({ type: 'editGroup', groupId: id }); } catch { /* sidebar closed */ }
     };
     const id = String(itemId);
     if (id === MENU.archiveTab) return handle({ type: 'closeTab', tabId });
     if (id === MENU.moveNew) {
       await handle({ type: 'newGroupForTab', tabId });
-      return edit(assign.get(tabId)?.groupId);
+      return edit(groupIdOfTab(tabId));
     }
     if (id.startsWith(MENU.moveTo)) {
       return handle({ type: 'moveTab', tabId, groupId: id.slice(MENU.moveTo.length) });
@@ -741,78 +1270,89 @@ export function createBackground({
   // ---- wiring ------------------------------------------------------------
 
   async function start() {
-    const stored = await browser.storage.local.get(['groups', 'archive', 'settings', 'counters', 'log']);
-    state.groups = stored.groups || {};
-    // Pins used to be per group. A pinned sub-group now takes its whole
-    // top-level group above the line, so nothing it protected starts expiring.
-    for (const g of Object.values(state.groups)) {
-      const root = state.groups[chain(state.groups, g.id)[0]];
-      if (!g.pinned || root === g) continue;
-      root.pinned = true;
-      g.pinned = false;
+    const stored = await browser.storage.local.get(null);
+    settings = { ...DEFAULTS, ...(stored.settings || {}) };
+    // Throws, before anything is written, for data from a newer build.
+    const { legacy, ...loaded } = loadStore(stored, newId);
+    Object.assign(doc, loaded);
+    for (const [key, value] of Object.entries(stored)) {
+      if (isDocKey(key)) written.set(key, JSON.stringify(value));
     }
-    state.archive = stored.archive || [];
-    state.log = stored.log || [];
-    state.settings = { ...DEFAULTS, ...(stored.settings || {}) };
-    state.counters = { ...state.counters, ...(stored.counters || {}) };
+    // Taken from what was stored, before this run changes anything.
+    if (!legacy) await dailySnapshot(backupOf(doc, now())).catch(reportError);
 
     const tabs = await browser.tabs.query({});
-    for (const t of tabs) {
-      seen.set(t.id, t);
-      const v = await browser.sessions.getTabValue(t.id, TAB_KEY).catch(() => null);
-      if (v && state.groups[v.groupId]) assign.set(t.id, v);
-      const name = await browser.sessions.getTabValue(t.id, NAME_KEY).catch(() => null);
-      if (name) names.set(t.id, name);
-      const row = await browser.sessions.getTabValue(t.id, ROW_KEY).catch(() => null);
-      if (Number.isInteger(row)) pinRows.set(t.id, row);
+    for (const windowId of windowsOf(tabs)) {
+      const saved = await browser.sessions.getWindowValue(windowId, WS_KEY).catch(() => null);
+      active.set(windowId, space(saved) ? saved : activeOf(windowId));
+      if (!space(saved)) remember(windowId);
     }
-    gc();
+    await reconcile(tabs, legacy);
 
-    browser.tabs.onCreated.addListener((tab) => { seen.set(tab.id, tab); consider(tab); push(); });
+    browser.tabs.onCreated.addListener((tab) => {
+      learnWindow(tab.windowId).catch(reportError);
+      track(tab);
+      consider(tab);
+      push();
+    });
     browser.tabs.onUpdated.addListener((tabId, change, tab) => {
-      seen.set(tabId, tab);
+      track(tab);
+      const e = byTab.get(tabId);
+      if (e) {
+        // Pinned or unpinned in the browser's own interface. Our own unpinning
+        // of a hidden workspace's favorites is not a change of mind.
+        if ('pinned' in change && activeOf(tab.windowId) === e.ws && !!change.pinned !== !!e.rec.favorite) {
+          setFavorite(e.rec, !!change.pinned, space(e.ws));
+          save();
+        }
+        if (sync(e.rec, tab)) save();
+      }
       if (change.url || change.status === 'complete' || change.title) consider(tab);
       push();
     });
     browser.tabs.onRemoved.addListener((tabId) => {
-      const tab = seen.get(tabId);
-      seen.delete(tabId);
-      // Closed by the browser rather than from the sidebar: archived all the same.
-      if (!archiving.delete(tabId) && tab && isSortable(tab)) record(tab);
-      assign.delete(tabId);
-      names.delete(tabId);
-      pinRows.delete(tabId);
+      const e = unbind(tabId);
       queue.delete(tabId);
+      if (e) {
+        space(e.ws).tabs = space(e.ws).tabs.filter((r) => r !== e.rec);
+        // Closed by the browser rather than from the sidebar: archived all the same.
+        if (!archiving.delete(tabId)) shelve(e.ws, e.rec);
+      }
       gc();
       changed();
     });
-    browser.tabs.onActivated.addListener(({ tabId }) => {
-      const a = assign.get(tabId);
-      if (a && state.groups[a.groupId]) {
-        expand(a.groupId);
-        save();
+    browser.tabs.onActivated.addListener(({ tabId, windowId }) => {
+      const e = byTab.get(tabId);
+      if (e) {
+        // However a hidden workspace's tab came to be selected, the window
+        // follows it there.
+        if (windowId != null && activeOf(windowId) !== e.ws) {
+          switchWorkspace(windowId, e.ws, tabId).then(changed, reportError);
+        }
+        const groupId = groupIdOfTab(tabId);
+        if (groupId) {
+          expand(space(e.ws), groupId);
+          save();
+        }
       }
       push();
     });
     browser.tabs.onMoved.addListener(push);
-    browser.tabs.onAttached.addListener(push);
+    browser.tabs.onAttached.addListener((tabId, info) => {
+      // Dragged to another window: it joins the workspace that window shows.
+      const e = byTab.get(tabId);
+      const wsId = info ? activeOf(info.newWindowId) : null;
+      if (e && wsId && wsId !== e.ws) handle({ type: 'moveTabToWorkspace', tabId, wsId }).catch(reportError);
+      push();
+    });
     browser.tabs.onDetached.addListener(push);
     browser.tabs.onReplaced.addListener((added, removed) => {
-      if (seen.has(removed)) seen.set(added, { ...seen.get(removed), id: added });
-      seen.delete(removed);
-      const a = assign.get(removed);
-      if (a) {
-        assign.delete(removed);
-        setAssign(added, a.groupId, a.host, a.manual);
+      const e = unbind(removed);
+      if (e) {
+        bind(added, e.ws, e.rec);
+        stamp(added, e.rec.uid);
       }
-      if (names.has(removed)) {
-        setName(added, names.get(removed));
-        names.delete(removed);
-      }
-      if (pinRows.has(removed)) {
-        setPinRow(added, pinRows.get(removed));
-        pinRows.delete(removed);
-      }
+      if (queue.delete(removed)) queue.add(added);
       push();
     });
 
@@ -828,21 +1368,29 @@ export function createBackground({
           menu = { port, tabId: msg.tabId ?? null, groupId: msg.groupId ?? null };
           return;
         }
-        handle(msg).catch(reportError);
+        handle(msg).then(() => {
+          // A new workspace opens with its name ready to type over.
+          if (msg.type !== 'newWorkspace') return;
+          try { port.postMessage({ type: 'editWorkspace', wsId: activeOf(msg.windowId) }); } catch { /* sidebar closed */ }
+        }).catch(reportError);
       });
       push();
     });
-    // The options page. Export and import answer with a result, and an import
-    // that fails rejects so the page can say why.
+    // The options page. These answer with a result, and one that fails rejects
+    // so the page can say why.
     browser.runtime.onMessage.addListener((msg) => {
-      if (msg.type === 'exportWorkspace') return exportWorkspace();
+      if (msg.type === 'exportWorkspace') return exportWorkspace(msg.windowId);
       if (msg.type === 'importWorkspace') return importWorkspace(msg.data, msg.windowId);
+      if (msg.type === 'exportBackup') return Promise.resolve(exportBackup());
+      if (msg.type === 'restoreBackup') return restoreBackup(msg.data);
+      if (msg.type === 'listSnapshots') return listSnapshots();
+      if (msg.type === 'restoreSnapshot') return restoreSnapshot(msg.key);
       return handle(msg).catch(reportError);
     });
 
     browser.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || !changes.settings) return;
-      state.settings = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
+      settings = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
       push();
       // Auto-tidy may have just been switched on, or its age shortened.
       tidy().catch(reportError);
@@ -850,22 +1398,49 @@ export function createBackground({
 
     browser.alarms.create('tidy', { periodInMinutes: 30 });
     browser.alarms.onAlarm.addListener((alarm) => {
-      if (alarm.name === 'tidy') tidy().catch(reportError);
+      if (alarm.name !== 'tidy') return;
+      dailySnapshot().catch(reportError);
+      tidy().catch(reportError);
     });
 
+    // Version 1's keys are copied aside, then removed once the document that
+    // replaces them is stored.
+    const old = LEGACY_KEYS.filter((key) => key in stored);
+    if (old.length) {
+      await browser.storage.local.set({ [LEGACY_KEY]: Object.fromEntries(old.map((key) => [key, stored[key]])) });
+    }
+    await flush();
+    if (old.length && !status.saveError) await browser.storage.local.remove(old);
+
+    await arrangeAll();
     tabs.forEach(consider);
     await tidy();
   }
 
   function reportError(e) {
-    status.error = (e && e.message) || String(e);
+    status.error = messageOf(e);
     push();
   }
 
+  const current = () => space(activeOf());
   return {
     start, handle, snapshot, runClassify, tidy, searchArchive, moveTargets,
-    exportWorkspace, importWorkspace,
+    exportWorkspace, importWorkspace, exportBackup, restoreBackup, listSnapshots, restoreSnapshot,
+    flush,
     menuClick: (itemId, tabId) => menuClick(itemId, tabId).catch(reportError),
-    state, assign, queue,
+    queue,
+    doc,
+    // The workspace last chosen, and the open tabs' records by tab id.
+    state: {
+      get groups() { return current().groups; },
+      get archive() { return archiveOf(current().id); },
+      get log() { return doc.log; },
+      get settings() { return settings; },
+    },
+    assign: {
+      get: (tabId) => byTab.get(tabId)?.rec,
+      has: (tabId) => !!groupIdOfTab(tabId),
+    },
+    workspaceOf: (tabId) => byTab.get(tabId)?.ws,
   };
 }

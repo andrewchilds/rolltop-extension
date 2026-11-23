@@ -176,6 +176,7 @@ function resultsNodes(view) {
 // ---- state and wiring ----------------------------------------------------
 
 let snap = null;
+let here = null; // the workspace this window shows: { id, name, groups, archiveCounts }
 let windowId = null;
 let port = null;
 let query = '';
@@ -183,6 +184,7 @@ let hits = { query: '', tabs: [] }; // archived tabs matching a query, from the 
 let editing = null; // id of the group being renamed in its row
 const older = new Set(); // ids of the groups whose older tabs are being shown
 let editingTab = null; // id of the tab being renamed in its row or pinned tile
+let editingWs = null; // id of the workspace being renamed in the footer
 let menuTarget = null; // what this sidebar's open context menu was opened on
 let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
 let marked = null; // the drop target currently highlighted
@@ -221,6 +223,49 @@ function finishRename(input, commit) {
     }
   }
   render();
+}
+
+// The footer's workspace button: its name, and a menu to switch, add, rename
+// and merge workspaces. While renaming it is a field instead.
+let spaceSig = null;
+function renderSpace() {
+  const renaming = editingWs === here.id;
+  const sig = JSON.stringify([here.id, here.name, renaming]);
+  if (sig === spaceSig) return;
+  spaceSig = sig;
+  hideMenu();
+  if (!renaming) {
+    $('space').replaceChildren(el('button', {
+      type: 'button', class: 'space-btn', title: 'Workspaces', 'aria-haspopup': 'menu', data: { act: 'spaceMenu' },
+    }, el('span', { class: 'space-name' }, here.name), icon('chevron', { cls: 'chev' })));
+    return;
+  }
+  const input = el('input', {
+    type: 'text', class: 'rename', value: here.name, maxlength: 30,
+    'aria-label': 'Workspace name', autocomplete: 'off', spellcheck: 'false',
+  });
+  const finish = (commit) => {
+    if (editingWs == null) return;
+    const wsId = editingWs;
+    editingWs = null;
+    const name = input.value.trim();
+    if (commit && name && name !== input.defaultValue) {
+      // Shown at once; the next snapshot confirms it.
+      const space = snap.spaces.find((s) => s.id === wsId);
+      if (space) space.name = name;
+      send('renameWorkspace', { wsId, name });
+    }
+    render();
+  };
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') finish(true);
+    else if (event.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+  $('space').replaceChildren(input);
+  window.focus();
+  input.focus();
+  input.select();
 }
 
 const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -291,9 +336,13 @@ function renderList(rows) {
 function render() {
   if (!snap || windowId == null) return;
   const view = buildView({
-    tabs: snap.tabs.filter((t) => t.windowId === windowId),
+    // A private tab belongs to no workspace and shows in whichever is open.
+    tabs: snap.tabs.filter((t) => t.windowId === windowId && (t.ws == null || t.ws === here.id)),
     groups: snap.groups,
     archiveCounts: snap.archiveCounts,
+    ws: here.id,
+    spaces: snap.spaces,
+    allTabs: snap.tabs,
     archiveHits: hits.query === query ? hits.tabs : [],
     older: [...older],
     auto: snap.auto,
@@ -336,6 +385,7 @@ function render() {
     }
   }
 
+  renderSpace();
   $('notice').hidden = !snap.error;
   $('notice').textContent = snap.error || '';
 }
@@ -362,7 +412,26 @@ let menu = null; // the menu element, made on first use
 let menuFor = null; // the button it is open for
 
 function menuItems(button) {
-  const { group, tab, fav } = button.dataset;
+  const { act, group, tab, fav } = button.dataset;
+  const others = snap.spaces.filter((s) => s.id !== here.id);
+  if (act === 'spaceMenu') {
+    const at = snap.spaces.indexOf(here);
+    const next = snap.spaces[at + 1] || snap.spaces[at - 1];
+    const item = (name, text, ws) => el('button', { type: 'button', role: 'menuitem', data: { act: name, ws } }, text);
+    return ['Workspaces', [
+      ...snap.spaces.map((s) => el('button', {
+        type: 'button', role: 'menuitemradio', 'aria-checked': String(s === here), data: { act: 'switchWorkspace', ws: s.id },
+      }, s.name)),
+      el('hr'),
+      item('newWorkspace', 'New workspace'),
+      item('renameWorkspace', 'Rename', here.id),
+      // Nothing is closed: its tabs, groups and archive join the next workspace.
+      next ? item('deleteWorkspace', `Merge into ${next.name}`, here.id) : null,
+    ]];
+  }
+  const moves = (name, data) => others.map((s) => el('button', {
+    type: 'button', role: 'menuitem', data: { act: name, ws: s.id, ...data },
+  }, `Move to ${s.name}`));
   if (group) {
     const g = snap.groups[group];
     if (!g) return null;
@@ -373,6 +442,7 @@ function menuItems(button) {
       g.parentId && snap.groups[g.parentId] ? null : item('pinGroup', g.pinned ? 'Unpin group' : 'Pin group'),
       item('toggleGroup', g.collapsed ? 'Expand' : 'Collapse'),
       item('archiveGroup', 'Archive group'),
+      ...moves('moveGroupWs', { group: g.id }),
     ]];
   }
   const item = (act, text) => el('button', { type: 'button', role: 'menuitem', data: { act, tab } }, text);
@@ -380,6 +450,7 @@ function menuItems(button) {
     fav ? item('unpinTab', 'Remove from Favorites') : item('pinTab', 'Add to Favorites'),
     item('renameTab', 'Rename'),
     item('closeTab', 'Close tab'),
+    ...moves('moveTabWs', { tab }),
   ]];
 }
 
@@ -416,7 +487,7 @@ addEventListener('resize', hideMenu);
 addEventListener('blur', hideMenu);
 document.addEventListener('keydown', (event) => {
   if (!menuFor) return;
-  const items = [...menu.children];
+  const items = [...menu.querySelectorAll('button')];
   const at = items.indexOf(document.activeElement);
   if (event.key === 'Escape') {
     const button = menuFor;
@@ -436,10 +507,19 @@ document.addEventListener('click', (event) => {
   const reopening = target && target === menuFor;
   hideMenu();
   if (!target || !snap || reopening) return;
-  const { act, tab, group, archive } = target.dataset;
+  const { act, tab, group, archive, ws } = target.dataset;
   const tabId = tab ? Number(tab) : undefined;
   switch (act) {
-    case 'groupMenu': case 'tabMenu': showMenu(target); return;
+    case 'groupMenu': case 'tabMenu': case 'spaceMenu': showMenu(target); return;
+    case 'switchWorkspace':
+      if (ws !== here.id) send('switchWorkspace', { wsId: ws });
+      break;
+    // The background answers with editWorkspace, to name it.
+    case 'newWorkspace': clearSearch(); send('newWorkspace'); break;
+    case 'renameWorkspace': editingWs = ws; break;
+    case 'deleteWorkspace': send('deleteWorkspace', { wsId: ws }); break;
+    case 'moveTabWs': send('moveTabToWorkspace', { tabId, wsId: ws }); break;
+    case 'moveGroupWs': send('moveGroupToWorkspace', { groupId: group, wsId: ws }); break;
     case 'renameGroup':
       if (!snap.groups[group]) return;
       editing = group;
@@ -778,8 +858,22 @@ function connect() {
     if (msg.type === 'archiveHits') {
       hits = msg;
     } else if (msg.type === 'state') {
+      const was = here && here.id;
       snap = msg;
+      here = msg.spaces.find((s) => s.id === msg.active[windowId]) || msg.spaces[0];
+      // The rest of this file reads the shown workspace's tree from the snapshot.
+      snap.groups = here.groups;
+      snap.archiveCounts = here.archiveCounts;
+      if (was !== here.id) {
+        editing = null;
+        editingTab = null;
+        older.clear();
+      }
       searchArchive(); // the archive may have changed under an open search
+    } else if (msg.type === 'editWorkspace') {
+      if (!snap) return;
+      clearSearch();
+      editingWs = msg.wsId; // its snapshot may only arrive next
     } else if (msg.type === 'editGroup') {
       clearSearch();
       editingTab = null;

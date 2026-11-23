@@ -1,17 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { alertOf, buildView, pinRowsOf, UNGROUPED } from '../extension/lib/model.js';
-import { mockArchive, mockSnapshot } from './fixture.js';
+import { mockArchive, mockSnapshot, shownIn } from './fixture.js';
 
 const NOW = 1_800_000_000_000;
 
 function view(overrides = {}, mutate) {
   const snap = mockSnapshot(NOW);
   if (mutate) mutate(snap);
-  return buildView({
-    tabs: snap.tabs, groups: snap.groups, archiveCounts: snap.archiveCounts,
-    auto: true, query: '', now: NOW, ...overrides,
-  });
+  return buildView({ ...shownIn(snap), auto: true, query: '', now: NOW, ...overrides });
 }
 
 const group = (v, name) => v.rows.find((r) => r.kind === 'group' && r.name === name);
@@ -177,17 +174,34 @@ test('search matches domains and reports no results', () => {
   assert.equal(view({ query: 'zzzz' }).noResults, true);
 });
 
+test('search reaches the other workspaces, and says where a result is', () => {
+  assert.equal(view().rows.some((r) => r.title === 'Shopping cart checklist'), false, 'not listed here');
+  const v = view({ query: 'shop' });
+  assert.deepEqual(v.groupResults.map((g) => [g.name, g.sub]), [
+    ['Standing desk', '3 tabs'],
+    ['Laptop sleeve', 'Archived, 2 tabs'],
+    ['Shop launch', 'Side project · 1 tab'],
+  ]);
+  assert.deepEqual(v.tabResults.map((t) => [t.title, t.tag]), [
+    ['Oak desktop, 160 by 80 cm', 'Standing desk'],
+    ['Cable tray, under-desk', 'Standing desk'],
+    ['Shopping cart checklist', 'Side project · Shop launch'],
+  ]);
+  const archived = view({ query: 'sleeve', archiveHits: [{ ...mockArchive(NOW)[0], ws: 'side', groupId: null }] });
+  assert.deepEqual(archived.tabResults.map((t) => t.tag), ['Side project · Archived']);
+});
+
 test('a group whose open tabs are all pinned is not listed', () => {
   const snap = mockSnapshot(NOW);
   // Leave the Kyoto subtree with only its two pinned tabs open.
   const kyoto = new Set(['trip', 'transit', 'stay']);
   snap.tabs = snap.tabs.filter((t) => !kyoto.has(t.groupId) || t.pinned);
-  const v = buildView({ ...snap, auto: true, query: '', now: NOW });
+  const v = buildView({ ...shownIn(snap), auto: true, query: '', now: NOW });
   const listed = v.rows.filter((r) => r.kind === 'group').map((r) => r.id);
   assert.equal(listed.some((id) => kyoto.has(id)), false);
   assert.equal(v.pins.length, 4);
 
-  const found = buildView({ ...snap, auto: true, query: 'kyoto', now: NOW });
+  const found = buildView({ ...shownIn(snap), auto: true, query: 'kyoto', now: NOW });
   assert.deepEqual(found.groupResults, []);
 });
 
@@ -208,6 +222,6 @@ test('pinned tiles fall into the rows they were laid out in', () => {
 
   const snap = mockSnapshot(NOW);
   snap.tabs.filter((t) => t.pinned).forEach((t, i) => { t.pinRow = i < 3 ? 0 : 1; });
-  const v = buildView({ ...snap, auto: true, query: '', now: NOW });
+  const v = buildView({ ...shownIn(snap), auto: true, query: '', now: NOW });
   assert.deepEqual(v.pinRows.map((row) => row.length), [3, 1]);
 });

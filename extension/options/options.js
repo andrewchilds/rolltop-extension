@@ -44,23 +44,29 @@ $('resort').addEventListener('click', async () => {
 // ---- workspace export and import ------------------------------------------
 
 const say = (text) => { $('workspaceStatus').textContent = text; };
+
+// Saves `data` as <name>-<today>.json.
+function download(data, name) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  const d = new Date();
+  const day = [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, '0')).join('-');
+  link.download = `${name}-${day}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 const count = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 const failure = (e) => (e && e.message) || String(e);
 let pending = null; // the parsed file waiting for the Import button
 
 $('export').addEventListener('click', async () => {
   try {
-    const data = await browser.runtime.sendMessage({ type: 'exportWorkspace' });
-    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    const d = new Date();
-    const day = [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, '0')).join('-');
-    link.download = `rolltop-workspace-${day}.json`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const here = await browser.tabs.getCurrent();
+    const data = await browser.runtime.sendMessage({ type: 'exportWorkspace', windowId: here && here.windowId });
+    download(data, 'rolltop-workspace');
     say(`Exported ${count(data.tabs.length, 'tab')} in ${count(data.groups.length, 'group')}.`);
   } catch (e) {
     say(failure(e));
@@ -106,6 +112,91 @@ $('import').addEventListener('click', async () => {
   }
 });
 
+// ---- backups ---------------------------------------------------------------
+
+const tell = (text) => { $('backupStatus').textContent = text; };
+const holds = (b) => `${count(b.tabs, 'tab')} in ${count(b.workspaces, 'workspace')}`;
+let backupFile = null; // the parsed backup file waiting for the Restore button
+let armed = null; // the timer that disarms Restore after its first press
+
+function disarm() {
+  clearTimeout(armed);
+  armed = null;
+  $('restore').textContent = 'Restore';
+  $('restore').disabled = !backupFile && !$('snapshots').value;
+}
+
+async function loadSnapshots() {
+  const snaps = await browser.runtime.sendMessage({ type: 'listSnapshots' });
+  const option = (value, text) => Object.assign(document.createElement('option'), { value, textContent: text });
+  $('snapshots').replaceChildren(
+    option('', snaps.length ? 'Choose a snapshot' : 'No snapshots yet'),
+    ...snaps.map((s) => option(s.key, `${s.key === 'snap:before-restore'
+      ? 'Before the last restore' : new Date(s.at).toLocaleDateString()} · ${holds(s)}`)),
+  );
+  disarm();
+}
+
+$('backup').addEventListener('click', async () => {
+  try {
+    const data = await browser.runtime.sendMessage({ type: 'exportBackup' });
+    download(data, 'rolltop-backup');
+    const spaces = Object.values(data.spaces);
+    tell(`Saved ${holds({ workspaces: spaces.length, tabs: spaces.reduce((n, s) => n + s.tabs.length, 0) })}.`);
+  } catch (e) {
+    tell(failure(e));
+  }
+});
+
+$('snapshots').addEventListener('change', () => {
+  backupFile = null;
+  $('backupFile').value = '';
+  tell('');
+  disarm();
+});
+
+$('backupFile').addEventListener('change', async () => {
+  backupFile = null;
+  const file = $('backupFile').files[0];
+  try {
+    if (file) {
+      const data = JSON.parse(await file.text());
+      if (!data || data.format !== 'rolltop-backup') throw new Error('This is not a Rolltop backup.');
+      backupFile = data;
+      $('snapshots').value = '';
+      tell('Backup file read.');
+    }
+  } catch (e) {
+    tell(e instanceof SyntaxError ? 'This file is not valid JSON.' : failure(e));
+  }
+  disarm();
+});
+
+// Restoring replaces every workspace, so it takes a second press.
+$('restore').addEventListener('click', async () => {
+  if (!armed) {
+    $('restore').textContent = 'Replace all workspaces?';
+    armed = setTimeout(disarm, 5000);
+    return;
+  }
+  const key = $('snapshots').value;
+  const data = backupFile;
+  clearTimeout(armed);
+  armed = null;
+  $('restore').disabled = true;
+  $('restore').textContent = 'Restore';
+  tell('Restoring…');
+  try {
+    const r = await browser.runtime.sendMessage(data ? { type: 'restoreBackup', data } : { type: 'restoreSnapshot', key });
+    backupFile = null;
+    $('backupFile').value = '';
+    tell(`Restored ${holds(r)}.`);
+  } catch (e) {
+    tell(failure(e));
+  }
+  loadSnapshots();
+});
+
 // ---- sorting log ---------------------------------------------------------
 
 function node(tag, cls, ...children) {
@@ -136,7 +227,9 @@ function logEntry(e, open) {
     ))),
   );
   const details = node('details', '',
-    node('summary', '', `${new Date(e.at).toLocaleString()} · ${e.tabs.length} ${e.tabs.length === 1 ? 'tab' : 'tabs'} · ${how}`),
+    node('summary', '', [
+      new Date(e.at).toLocaleString(), e.workspace, `${e.tabs.length} ${e.tabs.length === 1 ? 'tab' : 'tabs'}`, how,
+    ].filter(Boolean).join(' · ')),
     e.error ? node('p', 'err', e.error) : null,
     node('ul', '', ...tabs),
     ...e.renames.map((r) => node('p', 'sub', `Renamed group "${r.from}" to "${r.to}"`)),
@@ -161,3 +254,4 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 load();
 loadLog();
+loadSnapshots();

@@ -3,13 +3,15 @@
 A Firefox sidebar that groups, labels and archives tabs for you.
 
 - **Groups by topic.** With an Anthropic API key, Claude files each tab into a named group ("Kyoto in spring"), nests sub-topics, and reuses existing groups. Without a key, tabs are grouped by website and nothing leaves the machine.
-- **Search.** Finds open and archived tabs and groups. Each group also carries a one-word label from the classifier ("Trip", "Shopping"), shown and matched only in search.
+- **Workspaces.** The sidebar shows one workspace at a time, each with its own Favorites, Pinned and Browsing and its own archive. The name in the footer opens the list: switch, add, rename, or merge the one on show into its neighbour. Switching hides the other workspaces' tabs rather than closing them, so they keep their history and keep playing. A tab's or group's ellipsis menu moves it to another workspace; a tab leaves its group behind and is sorted again there. Each window remembers which workspace it shows.
+- **Search.** Looks in every workspace, and a result from another one says which; choosing it switches there. Finds open and archived tabs and groups. Each group also carries a one-word label from the classifier ("Trip", "Shopping"), shown and matched only in search.
 - **Auto-tidy.** A group whose tabs have not been visited for 8 hours collapses (configurable), pinned groups included. Untouched tabs fade after 2 days, and after 5 they fold away behind a "Show older" row in their group; this applies in Pinned too. In Browsing they are archived after 14 days (configurable). Archived tabs are closed but stay searchable and can be reopened into their group. Closing a tab any other way archives it too.
 - **Favorites.** Pinned tabs sit in a grid at the top, in rows of one to six. Drag a tab or a pinned tile over the grid and the tiles make room: drop it within a row, or on a row's top or bottom edge to start a new one. 
 - **Pinned and Browsing.** Below Favorites the list has two sections with a line between them. Pinning a top-level group moves it, with everything nested in it, up into Pinned; dragging a group beside one on the other side moves it across too. Pinned is yours: nothing fades or archives, and the classifier cannot file tabs there, add or rename groups, or move a tab out when it navigates. New tabs are always sorted into Browsing.
 - **Right-click.** A tab row or pinned tile opens Firefox's own tab menu with **Archive tab** and **Move to group** added. A group row offers Rename, Pin, Collapse and Archive; the ellipsis on the row opens the same actions. A tab row or pinned tile also has an ellipsis, shown on hover, with Add to (or Remove from) Favorites, Rename and Close tab. A group you rename keeps its name, and a tab you move stays where you put it, whatever the classifier thinks.
 - **Middle-click.** A tab row or pinned tile closes that tab; a group row closes the group. Both are archived, so they can be reopened.
-- **Move to another browser.** Settings has **Export workspace**, which saves your open tabs and their groups to a file, and an import for that file. Importing adds to what is there: groups with the same name are merged, a tab already open in its group is skipped, and tabs open unloaded until you visit them (pinned tabs load). Archived tabs and settings are not in the file.
+- **Backups.** Settings has **Download backup**, a file holding every workspace with its groups, tabs and archive, and Rolltop keeps a snapshot from each of the last seven days it was used. Restoring either replaces every workspace without closing a tab: open tabs go back to their places, and the backup's tabs that are not open go to the archive. What was there before is kept as a snapshot.
+- **Move to another browser.** Settings has **Export workspace**, which saves the open tabs of the workspace on show and their groups to a file, and an import for that file. Importing adds to what is there: groups with the same name are merged, a tab already open in its group is skipped, and tabs open unloaded until you visit them (pinned tabs load). Archived tabs and settings are not in the file.
 - **Drag and drop.** Drag a tab onto a group to move it, or beside another tab to place it. Drag a group onto another to nest it (up to three levels), or to its top or bottom edge to reorder.
 
 ## Run it
@@ -110,6 +112,7 @@ Upstream files the fork edits, which are where a rebase can conflict:
 | `browser/themes/shared/browser-shared.css` | Imports `rolltop.css`. |
 | `toolkit/themes/shared/aboutNetError.css` | Imports `rolltop-neterror.css`. |
 | `browser/components/tabbrowser/content/tabbrowser.js` | Hides the tab strip when `rolltop.hideTabStrip` is set. |
+| `browser/components/extensions/parent/ext-tabs.js` | A built-in add-on hiding tabs gets no warning popup and no all-tabs button: Rolltop hides the tabs of workspaces that are not on show. |
 | `browser/components/customizableui/CustomizableUI.sys.mjs` | Drops the flexible spaces and the account button from the default toolbar. |
 
 Toolbar defaults and the sidebar-open default only apply to a new profile. `./mach run` keeps its profile between runs; delete `obj-rolltop/tmp/profile-default` to see defaults again.
@@ -178,9 +181,29 @@ If the rebase stops on a conflict, it is in an upstream file the fork edited. Re
 | `extension/lib/model.js` | Turns tabs and groups into the rows the sidebar renders. |
 | `extension/lib/plan.js` | Applies a classifier's plan to the group tree; site-based fallback. |
 | `extension/lib/workspace.js` | The workspace file: checks one being imported and merges its groups into the tree. |
-| `src/background/core.js` | Tab tracking, classification queue, archive, auto-tidy, workspace export and import. |
+| `extension/lib/store.js` | The stored document: its storage keys, loading (and reading version 1's data), backups and snapshots. |
+| `src/background/core.js` | The document of workspaces, groups and tab records; binding open tabs to their records; classification queue, archive, auto-tidy, export, import and restore. |
 | `src/background/classify-ai.js` | The Claude request. |
 | `test/` | `npm test`. `test/harness/` renders the sidebar with sample data in any browser: serve the repo root and open `/test/harness/?w=300`. |
+
+## Where things are stored
+
+Everything is in the extension's `storage.local`, which Firefox keeps in the profile under the extension's ID. Changing the ID orphans it.
+
+| Key | Holds |
+|---|---|
+| `meta` | The store version, the order of the workspaces and the one last chosen. |
+| `ws:<id>` | One workspace: its name, its group tree and a record for each of its open tabs (address, title, group, name, whether it is a favorite and where). |
+| `archive:<id>` | That workspace's archived tabs. |
+| `snap:<day>`, `snap:before-restore` | Backups of all of the above: one per day of use, seven kept, and the state before the last restore. |
+| `settings`, `log` | The settings, with the API key, and the sorting log. |
+| `legacy-v1` | What the single-workspace version stored, copied aside when it was converted. |
+
+A save writes only the keys whose content changed. If one fails, the sidebar says so and it is tried again.
+
+An open tab carries one thing, in Firefox's session store: the `uid` of its record. A window carries the id of the workspace it shows. After a restart each tab is matched to its record by uid; a tab that lost its uid is matched by address. A record whose tab is not open goes to the archive with its uid, so a tab the browser brings back later (undo close, a restored window, a session restored late) gets its group, name and place again. Groups are removed only when nothing in the stored document, open or archived, is filed in them; what the browser reports as open at startup plays no part.
+
+Firefox does not hide a pinned tab, so the favorites of a workspace that is not on show are unpinned in the tab strip while hidden and pinned again when it is shown. Their records keep them favorites throughout.
 
 ## What is sent to the API
 

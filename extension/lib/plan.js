@@ -61,7 +61,8 @@ export function heuristicPlan(tabs, groups) {
 
 export const clean = (s, max) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, max);
 
-export function applyPlan(groups, counters, plan, validTabIds) {
+// `makeId` names each new group; without one, ids count up from the counters.
+export function applyPlan(groups, counters, plan, validTabIds, makeId) {
   const next = {};
   Object.values(groups).forEach((g) => { next[g.id] = { ...g }; });
   const c = { ...counters };
@@ -94,7 +95,7 @@ export function applyPlan(groups, counters, plan, validTabIds) {
         refs.set(g.ref, twin.id);
         continue;
       }
-      const id = 'g' + c.nextGroup;
+      const id = makeId ? makeId() : 'g' + c.nextGroup;
       let hue;
       if (parentId) {
         const siblings = Object.values(next).filter((x) => x.parentId === parentId).length;

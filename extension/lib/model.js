@@ -155,11 +155,20 @@ function plural(n) {
   return n + (n === 1 ? ' tab' : ' tabs');
 }
 
-// Turns one window's tabs plus the shared group tree into flat render lists.
+// Turns the tabs one window shows, plus their workspace's group tree, into
+// flat render lists.
 //   archiveCounts: { groupId: number of archived tabs filed directly in it }
 //   archiveHits:   archived tabs matching `query`, fetched from the background
 //   older:         ids of the groups whose older tabs are being shown
-export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], older = [], auto, query, now }) {
+//   ws:            the id of the workspace being shown
+//   spaces:        every workspace, as { id, name, groups, archiveCounts }
+//   allTabs:       the tabs of every workspace and window, each with its `ws`
+// The last two are what a search looks through; without them it looks through
+// `tabs` and `groups`.
+export function buildView({
+  tabs, groups, archiveCounts = {}, archiveHits = [], older = [], auto, query, now,
+  ws = null, spaces = null, allTabs = null,
+}) {
   const open = [...tabs].sort((a, b) => a.index - b.index);
   const groupOf = (t) => (t.groupId && groups[t.groupId] ? t.groupId : null);
   const hueOf = (gid) => (gid ? groups[gid].hue : null);
@@ -293,45 +302,65 @@ export function buildView({ tabs, groups, archiveCounts = {}, archiveHits = [], 
     loose.forEach((t) => rows.push(tabRow(t, null, 0)));
   }
 
+  // Search looks in every workspace and every window, not only what is listed.
   let groupResults = [];
   let tabResults = [];
   if (q) {
-    groupResults = Object.values(groups)
-      .filter((g) => g.name.toLowerCase().includes(q) || g.label.toLowerCase().includes(q))
-      .sort((a, b) => a.order - b.order)
-      .map((g) => {
-        const { listed: live, archived: stored } = total(g.id);
-        if (!live && !stored) return null;
-        return {
+    const everywhere = spaces || [{ id: ws, name: '', groups, archiveCounts }];
+    const pool = allTabs || tabs;
+    // Results from another workspace say which.
+    const where = (s) => (s.id !== ws && s.name ? s.name + ' · ' : '');
+    for (const s of everywhere) {
+      // A tab with no workspace of its own (a private one) counts as being here.
+      const mine = pool.filter((t) => (t.ws ?? ws) === s.id).sort((a, b) => a.windowId - b.windowId || a.index - b.index);
+      const filed = (t) => (t.groupId && s.groups[t.groupId] ? t.groupId : null);
+      const below = childMap(s.groups);
+      const count = (id) => {
+        const sum = { live: mine.filter((t) => !t.pinned && filed(t) === id).length, stored: (s.archiveCounts || {})[id] || 0 };
+        for (const k of below.get(id) || []) {
+          const sub = count(k.id);
+          sum.live += sub.live;
+          sum.stored += sub.stored;
+        }
+        return sum;
+      };
+      for (const g of Object.values(s.groups).sort((a, b) => a.order - b.order)) {
+        if (!g.name.toLowerCase().includes(q) && !g.label.toLowerCase().includes(q)) continue;
+        const { live, stored } = count(g.id);
+        if (!live && !stored) continue;
+        groupResults.push({
           id: g.id,
-          name: pathName(groups, g.id),
+          name: pathName(s.groups, g.id),
           label: g.label,
           hue: g.hue,
           gone: !live,
-          sub: live ? plural(live) : 'Archived, ' + plural(stored),
+          sub: where(s) + (live ? plural(live) : 'Archived, ' + plural(stored)),
           actLabel: live ? 'Show' : 'Reopen',
-        };
-      })
-      .filter(Boolean);
-
-    tabResults = [
-      ...open.filter((t) => matchesQuery(searchText(t), t.url, q)).map((t) => ({
-        tabId: t.id,
-        title: shown(t),
-        favIconUrl: t.favIconUrl || '',
-        mono: monoOf(shown(t)),
-        hue: hueOf(groupOf(t)),
-        tag: groupOf(t) ? groups[groupOf(t)].name : 'Ungrouped',
-      })),
-      ...archiveHits.map((a) => ({
+        });
+      }
+      for (const t of mine) {
+        if (!matchesQuery(searchText(t), t.url, q)) continue;
+        tabResults.push({
+          tabId: t.id,
+          title: shown(t),
+          favIconUrl: t.favIconUrl || '',
+          mono: monoOf(shown(t)),
+          hue: filed(t) ? s.groups[filed(t)].hue : null,
+          tag: where(s) + (filed(t) ? s.groups[filed(t)].name : 'Ungrouped'),
+        });
+      }
+    }
+    for (const a of archiveHits) {
+      const s = everywhere.find((x) => x.id === a.ws) || everywhere.find((x) => x.id === ws) || everywhere[0];
+      tabResults.push({
         archiveId: a.id,
         title: shown(a),
         favIconUrl: a.favIconUrl || '',
         mono: monoOf(shown(a)),
-        hue: a.groupId && groups[a.groupId] ? groups[a.groupId].hue : null,
-        tag: 'Archived',
-      })),
-    ];
+        hue: a.groupId && s.groups[a.groupId] ? s.groups[a.groupId].hue : null,
+        tag: where(s) + 'Archived',
+      });
+    }
   }
 
   return {

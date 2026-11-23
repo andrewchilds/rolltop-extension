@@ -61,9 +61,18 @@ export function mockSnapshot(now = Date.now()) {
   return {
     type: 'state',
     groups,
-    tabs: TABS.map(([key, groupId, title, domain, idle, pinned], i) => ({
+    spaces: [
+      { id: 'home', name: 'Home', groups, archiveCounts: { sleeve: ARCHIVE.length } },
+      {
+        id: 'side', name: 'Side project', archiveCounts: {},
+        groups: { shop: { id: 'shop', name: 'Shop launch', label: 'Launch', hue: 200, parentId: null, pinned: false, collapsed: false, order: 1 } },
+      },
+    ],
+    active: { 1: 'home' },
+    tabs: [...TABS, ['x1', 'shop', 'Shopping cart checklist', 'launchpad.dev', 1]].map(([key, groupId, title, domain, idle, pinned], i) => ({
       id: i + 1,
       key,
+      ws: key === 'x1' ? 'side' : 'home',
       windowId: 1,
       index: i,
       title,
@@ -80,5 +89,18 @@ export function mockSnapshot(now = Date.now()) {
     ai: true,
     sorting: false,
     error: '',
+  };
+}
+
+// What the sidebar of window 1 hands buildView for a snapshot.
+export function shownIn(snap) {
+  const here = snap.spaces.find((s) => s.id === snap.active[1]);
+  return {
+    tabs: snap.tabs.filter((t) => t.windowId === 1 && (t.ws == null || t.ws === here.id)),
+    groups: here.groups,
+    archiveCounts: here.archiveCounts,
+    ws: here.id,
+    spaces: snap.spaces,
+    allTabs: snap.tabs,
   };
 }

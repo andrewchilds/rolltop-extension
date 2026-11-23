@@ -68,8 +68,9 @@ export function readWorkspace(data) {
 // name, same parent, same side of the line) is merged into it, so importing
 // into a workspace that has "Read later" does not make a second one, and
 // importing the same file twice adds nothing. New groups go after the existing
-// ones, keeping the order they had among themselves.
-export function mergeGroups(groups, counters, incoming) {
+// ones, keeping the order they had among themselves. `makeId` names each new
+// group; without one, ids count up from the counters.
+export function mergeGroups(groups, counters, incoming, makeId) {
   const next = {};
   Object.values(groups).forEach((g) => { next[g.id] = { ...g }; });
   const c = { ...counters };
@@ -97,7 +98,7 @@ export function mergeGroups(groups, counters, incoming) {
       ids.set(g.id, twin.id);
       return twin.id;
     }
-    const id = 'g' + c.nextGroup;
+    const id = makeId ? makeId() : 'g' + c.nextGroup;
     c.nextGroup += 1;
     if (!parentId) c.topLevel += 1;
     next[id] = { ...g, id, parentId, pinned };

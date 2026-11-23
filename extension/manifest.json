@@ -13,8 +13,10 @@
   "icons": { "48": "icons/rolltop.svg", "96": "icons/rolltop.svg" },
   "permissions": [
     "tabs",
+    "tabHide",
     "sessions",
     "storage",
+    "unlimitedStorage",
     "alarms",
     "menus",
     "menus.overrideContext",
