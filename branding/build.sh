@@ -4,7 +4,7 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-fork=${ROLLTOP_FIREFOX:-$here/../../rolltop-firefox}
+fork=${ROLLTOP_FIREFOX:-$here/../../rolltop-browser}
 out=$fork/browser/branding/rolltop
 svg=$here/rolltop-logo.svg
 tmp=$(mktemp -d)

@@ -36,14 +36,14 @@ Extensions cannot remove Firefox's own tab bar. To hide it, set `toolkit.legacyU
 
 ## Firefox fork
 
-The fork is a separate checkout at `../rolltop-firefox`: Mozilla's `esr153` branch with Rolltop's changes on a local branch named `rolltop`. `origin` there is `https://github.com/mozilla-firefox/firefox`.
+The fork is a separate checkout at `../rolltop-browser`: Mozilla's `esr153` branch with Rolltop's changes on a local branch named `rolltop`. `origin` there is `git@github.com:andrewchilds/rolltop-browser.git`; Mozilla's repository, `https://github.com/mozilla-firefox/firefox`, is the `upstream` remote.
 
 **The `rolltop` branch exists only on this machine.** Until it is pushed to a remote of your own, deleting the checkout loses the fork's commits.
 
 ### Build and run
 
 ```sh
-cd ../rolltop-firefox
+cd ../rolltop-browser
 ./mach build faster && ./mach run
 ```
 
@@ -57,11 +57,11 @@ The fork ships this extension as a built-in add-on. `browser/extensions/rolltop/
 
 ```sh
 npm run fork:sync                 # build, then copy extension/ into the fork
-cd ../rolltop-firefox
+cd ../rolltop-browser
 ./mach build faster && ./mach run
 ```
 
-Then commit the refreshed copy in the fork. Set `ROLLTOP_FIREFOX` if the checkout is somewhere other than `../rolltop-firefox`.
+Then commit the refreshed copy in the fork. Set `ROLLTOP_FIREFOX` if the checkout is somewhere other than `../rolltop-browser`.
 
 Firefox hides built-in add-ons from `about:addons`, so Rolltop's settings are reached from the toolbar button's right-click menu. The button sits in the extensions panel (puzzle-piece icon) by default.
 
@@ -75,7 +75,7 @@ The bundled copy only decides which version a new profile starts on. To refresh 
 
 ```sh
 npm run fork:ublock               # download the latest signed release into the fork
-cd ../rolltop-firefox
+cd ../rolltop-browser
 ./mach build faster
 ```
 
@@ -95,7 +95,7 @@ Still Mozilla's Nightly artwork, copied from `browser/branding/unofficial`: the 
 
 ### Window chrome
 
-The fork hides the native tab strip, trims the toolbar to back, forward, reload, the address bar and the menu, opens the Rolltop sidebar by default without its header, and draws the page as a rounded card.
+The fork hides the native tab strip, trims the toolbar to back, forward, reload, the address bar and the menu, opens the Rolltop sidebar by default without its header, draws the page as a rounded card, and reopens the previous session's tabs on startup (`browser.startup.page` is `3`; Firefox's default restores only pinned tabs).
 
 | What | Where in the fork |
 |---|---|
@@ -152,7 +152,7 @@ For a full build, source `rolltop/mozconfig-release` instead and drop the artifa
 Mozilla ships security fixes to ESR every four weeks, and occasionally in between when a bug is being exploited. The dates are at <https://whattrainisitnow.com> and the fixes at <https://www.mozilla.org/security/advisories/>. Each advisory tells attackers where the bugs are, so take every release soon after it lands:
 
 ```sh
-cd ../rolltop-firefox
+cd ../rolltop-browser
 git fetch origin esr153
 git rebase origin/esr153 rolltop
 ./mach build && ./mach run

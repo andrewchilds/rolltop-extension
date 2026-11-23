@@ -12,8 +12,8 @@
     "start": "npm run build && web-ext run --source-dir extension",
     "package": "npm run build && web-ext build --source-dir extension --overwrite-dest",
     "fork:brand": "sh branding/build.sh",
-    "fork:ublock": "curl -fsSL -o \"${ROLLTOP_FIREFOX:-../rolltop-firefox}/browser/extensions/rolltop/distribution/uBlock0@raymondhill.net.xpi\" https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
-    "fork:sync": "npm run build && rsync -a --delete --exclude .DS_Store extension/ \"${ROLLTOP_FIREFOX:-../rolltop-firefox}/browser/extensions/rolltop/extension/\""
+    "fork:ublock": "curl -fsSL -o \"${ROLLTOP_FIREFOX:-../rolltop-browser}/browser/extensions/rolltop/distribution/uBlock0@raymondhill.net.xpi\" https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi",
+    "fork:sync": "npm run build && rsync -a --delete --exclude .DS_Store extension/ \"${ROLLTOP_FIREFOX:-../rolltop-browser}/browser/extensions/rolltop/extension/\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.11.0"
