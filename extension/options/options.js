@@ -1,4 +1,4 @@
-const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-opus-5-5' };
+const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-haiku-5-5' };
 const $ = (id) => document.getElementById(id);
 
 async function load() {

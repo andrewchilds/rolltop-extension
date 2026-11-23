@@ -8,7 +8,7 @@ import {
 import { applyPlan, clean, gcGroups, heuristicPlan } from '../../extension/lib/plan.js';
 import { FORMAT, VERSION, mergeGroups, readWorkspace } from '../../extension/lib/workspace.js';
 
-export const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-opus-5-5' };
+export const DEFAULTS = { auto: true, archiveDays: 14, collapseHours: 8, apiKey: '', model: 'claude-haiku-5-5' };
 const ARCHIVE_CAP = 1000;
 const BATCH = 40;
 const SEARCH_LIMIT = 50;

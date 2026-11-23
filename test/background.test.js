@@ -139,7 +139,7 @@ test('the AI plan is applied, with site grouping for tabs it skips', async () =>
   ], { ai, stored: { settings: { apiKey: 'sk-test' } } });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tabs.length, 3);
-  assert.equal(calls[0].model, 'claude-opus-5-5');
+  assert.equal(calls[0].model, 'claude-haiku-5-5');
   assert.equal(groupOf(bg, 1).name, 'Kyoto in spring');
   assert.equal(groupOf(bg, 2), groupOf(bg, 1));
   assert.equal(groupOf(bg, 3).name, 'ledgerly.com');
@@ -717,7 +717,7 @@ test('each sorting run is logged with where tabs went and why', async () => {
     { ai, stored: { settings: { apiKey: 'sk-test' } } },
   );
   const [entry] = bg.state.log;
-  assert.equal(entry.model, 'claude-opus-5-5');
+  assert.equal(entry.model, 'claude-haiku-5-5');
   assert.deepEqual(entry.tabs.map((t) => [t.url, t.by, t.group, t.created, t.reason]), [
     ['slowroutes.travel/kyoto', 'ai', 'Kyoto in spring', true, 'A trip plan; nothing existing fits.'],
     ['b.com/', 'site', 'b.com', true, ''],
