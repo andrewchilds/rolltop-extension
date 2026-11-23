@@ -5,8 +5,9 @@
   "type": "module",
   "description": "Firefox sidebar that groups, labels and archives tabs automatically.",
   "scripts": {
-    "build": "esbuild src/background/index.js --bundle --format=iife --target=firefox142 --outfile=extension/dist/background.js",
-    "watch": "npm run build -- --watch",
+    "bundle": "esbuild src/background/index.js --bundle --format=iife --target=firefox142 --outfile=extension/dist/background.js --metafile=node_modules/.cache/rolltop-meta.json",
+    "build": "npm run bundle && node scripts/third-party-licenses.mjs node_modules/.cache/rolltop-meta.json extension/dist/THIRD-PARTY-LICENSES.txt",
+    "watch": "npm run bundle -- --watch",
     "test": "node --test \"test/*.test.js\"",
     "lint": "npm run build && web-ext lint --source-dir extension",
     "start": "npm run build && web-ext run --source-dir extension",
