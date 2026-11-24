@@ -192,6 +192,35 @@ test('an AI failure falls back to site grouping and surfaces the error', async (
   assert.match((await bg.snapshot()).error, /API key was rejected/);
 });
 
+for (const apiKey of ['sk-test', '']) {
+  test(`private tabs are never sorted, recorded or sent to the AI (${apiKey ? 'with' : 'without'} a key)`, async () => {
+    const calls = [];
+    const ai = async (req) => {
+      calls.push(req);
+      return { newGroups: [], assignments: [], renames: [] };
+    };
+    const { bg, browser } = await boot([
+      { id: 1, url: 'https://example.com/', title: 'Public' },
+      { id: 2, url: 'https://secret.example.net/', title: 'Hidden plans', incognito: true },
+    ], { ai, stored: { settings: { apiKey } } });
+    browser._tabs[1].url = 'https://secret.example.net/more';
+    browser.tabs.onUpdated.fire(2, { url: browser._tabs[1].url, status: 'complete' }, { ...browser._tabs[1] });
+    await tick();
+    await bg.runClassify();
+    await bg.handle({ type: 'resort' });
+    await bg.handle({ type: 'closeTab', tabId: 2 });
+    await bg.flush();
+    await tick();
+    assert.equal(calls.length > 0, !!apiKey);
+    assert.equal(bg.assign.has(2), false);
+    assert.equal(groupOf(bg, 1).name, 'example.com');
+    assert.deepEqual(Object.values(bg.state.groups).map((g) => g.name), ['example.com']);
+    for (const seen of [calls, browser._storage, bg.state.log, bg.state.archive]) {
+      assert.doesNotMatch(JSON.stringify(seen), /secret|Hidden plans/);
+    }
+  });
+}
+
 test('closing from the sidebar archives the tab; reopening restores its group', async () => {
   const { bg, browser } = await boot([
     { id: 1, url: 'https://example.com/a', title: 'A' },

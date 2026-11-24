@@ -207,4 +207,8 @@ Firefox does not hide a pinned tab, so the favorites of a workspace that is not 
 
 ## What is sent to the API
 
-Only when a key is set, and only for tabs that need sorting: the tab's title, its address without the query string or fragment, and your existing group names with up to six tab titles each. Private windows are not included.
+Rolltop, the fork and the extension, collects no usage data. Neither reports to a server of ours, so we never see or have access to browsing activity, in standard or private windows. The settings page says so under "Privacy". The only request the extension makes is the one below, to Anthropic, under the user's own key; what the fork still fetches from Mozilla is listed under "What the fork turns off".
+
+Only when a key is set, and only for tabs that need sorting: the tab's title, its address without the query string or fragment, and your existing group names with up to six tab titles each.
+
+Tabs in private windows are never sorted, by Claude or by website, whether or not a key is set. Rolltop keeps no record of them, so they are also absent from the archive, the sorting log and workspace files. The settings page says so under "Private windows".

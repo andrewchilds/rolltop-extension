@@ -35,14 +35,22 @@
 </head>
 <body>
 <form id="form">
+  <h2>Privacy</h2>
+  <p>Rolltop collects no usage data, in the browser or in this extension. Neither one reports to a server of ours, so we never see or have access to what you browse, in standard or private windows.</p>
+  <p class="hint">In the Rolltop browser, Firefox's telemetry, studies and crash reports are turned off. Your tabs, groups and archive are stored only in this profile. The one thing the extension can send anywhere is the AI sorting request described below, and only once you add an API key: it goes straight from this browser to Anthropic under your own key, and never to us.</p>
+
   <h2>AI sorting</h2>
   <p>With an Anthropic API key, Rolltop asks Claude to group tabs by what you are doing. Without one, tabs are grouped by website and nothing leaves this computer.</p>
-  <p class="hint">What is sent when a tab needs sorting: its title, its address without the query string or fragment, and the names of your existing groups with a few of their tab titles. Private windows are never sent. The key is stored unencrypted in this Firefox profile.</p>
+  <p class="hint">What is sent when a tab needs sorting: its title, its address without the query string or fragment, and the names of your existing groups with a few of their tab titles. The key is stored unencrypted in this Firefox profile.</p>
   <label for="apiKey">Anthropic API key</label>
   <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
   <label for="model">Model</label>
   <input id="model" type="text" autocomplete="off" spellcheck="false">
   <p class="hint">claude-haiku-5-5 is the default. claude-opus-5-5 costs far more.</p>
+
+  <h2>Private windows</h2>
+  <p>Tabs in private windows are never sorted, with or without an API key. Nothing about them is sent to Anthropic, and they are not grouped by website either.</p>
+  <p class="hint">Rolltop keeps no record of them: they are left out of groups, the archive, the sorting log and workspace files. While open they show in the sidebar, ungrouped. There is no setting to change this.</p>
 
   <h2>Auto-tidy</h2>
   <label class="check"><input id="auto" type="checkbox"> Collapse groups and fade and archive tabs you have stopped using</label>
