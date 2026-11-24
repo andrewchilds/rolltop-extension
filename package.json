@@ -2,6 +2,7 @@
   "name": "rolltop-browser",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Firefox sidebar that groups, labels and archives tabs automatically.",
   "scripts": {
