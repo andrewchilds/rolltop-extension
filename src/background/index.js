@@ -25,6 +25,8 @@ const item = (id, title, contexts, extra = {}) =>
   browser.menus.create({ id, title, contexts, ...sidebarOnly, ...extra });
 
 item(MENU.archiveTab, 'Archive tab', ['tab']);
+// Shown by the sidebar when the row is one of several selected.
+item(MENU.groupTabs, 'Group tabs', ['tab'], { visible: false });
 item(MENU.move, 'Move to group', ['tab']);
 item(MENU.moveNew, 'New group', ['tab'], { parentId: MENU.move });
 item(MENU.moveSep, undefined, ['tab'], { parentId: MENU.move, type: 'separator' });

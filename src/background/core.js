@@ -67,7 +67,7 @@ export function createBackground({
   let importing = 0; // workspace imports in progress
   let snapDay = ''; // the day the last daily snapshot was taken or found
   // The row a sidebar last opened a context menu on, and the sidebar's port.
-  let menu = { port: null, tabId: null, groupId: null };
+  let menu = { port: null, tabId: null, groupId: null, tabIds: [] };
 
   const debounce = (fn, ms) => {
     let timer = null;
@@ -1013,10 +1013,36 @@ export function createBackground({
       .sort((a, b) => a.index - b.index);
   }
 
+  // Files tabs in a new top-level group and returns its id. Tabs of another
+  // workspace than the first one's are left alone.
+  async function groupTabs(tabIds) {
+    const picked = [...new Set(tabIds)].filter((id) => byTab.has(id));
+    if (!picked.length) return null;
+    const { ws } = byTab.get(picked[0]);
+    const ids = picked.filter((id) => byTab.get(id).ws === ws);
+    const own = space(ws);
+    const res = applyPlan(own.groups, own.counters, {
+      newGroups: [{ ref: 'new', name: 'New group', label: 'Custom', parent: null }],
+      assignments: ids.map((tabId) => ({ tabId, group: 'new' })),
+    }, new Set(ids), makeGroupId);
+    const groupId = res.assign[ids[0]];
+    if (!groupId) return null;
+    own.groups = res.groups;
+    own.counters = res.counters;
+    own.groups[groupId].manual = true;
+    for (const id of ids) {
+      const tab = await browser.tabs.get(id);
+      file(id, groupId, hostOf(tab.url), true);
+      queue.delete(id);
+    }
+    return groupId;
+  }
+
   async function handle(msg) {
     const home = msg.groupId ? homeOfGroup(msg.groupId) : null;
     const g = home ? home.groups[msg.groupId] : null;
     const e = msg.tabId != null ? byTab.get(msg.tabId) : null;
+    let made = null; // id of the group a message made
     switch (msg.type) {
       case 'activate': {
         const tab = await browser.tabs.get(msg.tabId);
@@ -1115,6 +1141,19 @@ export function createBackground({
         }
         break;
       }
+      // Several tabs dragged together: the first lands where a single tab
+      // would, and the rest follow it in the order given.
+      case 'moveTabs': {
+        let prev = null;
+        for (const tabId of new Set(Array.isArray(msg.tabIds) ? msg.tabIds : [])) {
+          if (!byTab.has(tabId)) continue;
+          const { tabIds, ...first } = msg;
+          await handle(prev == null ? { ...first, type: 'moveTab', tabId }
+            : { type: 'moveTab', windowId: msg.windowId, groupId: msg.groupId, tabId, nearTabId: prev, after: true });
+          if (groupIdOfTab(tabId) === msg.groupId) prev = tabId;
+        }
+        break;
+      }
       // Drag and drop of a group: beside another group (`targetId`, `where`
       // before or after), last in one (`where` into; no `targetId` for the top
       // level), or beside a tab of the group it joins (`nearTabId`, `after`).
@@ -1166,21 +1205,25 @@ export function createBackground({
         if (parentId != null) expand(home, parentId);
         break;
       }
-      case 'newGroupForTab': {
-        if (!e) break;
-        const own = space(e.ws);
-        const tab = await browser.tabs.get(msg.tabId);
-        const res = applyPlan(own.groups, own.counters, {
-          newGroups: [{ ref: 'new', name: 'New group', label: 'Custom', parent: null }],
-          assignments: [{ tabId: tab.id, group: 'new' }],
-        }, new Set([tab.id]), makeGroupId);
-        own.groups = res.groups;
-        own.counters = res.counters;
-        own.groups[res.assign[tab.id]].manual = true;
-        file(tab.id, res.assign[tab.id], hostOf(tab.url), true);
-        queue.delete(tab.id);
+      // Several groups dragged together: the first lands where a single group
+      // would, and the rest follow it in the order given.
+      case 'moveGroups': {
+        const { groupIds, ...first } = msg;
+        let prev = null;
+        for (const groupId of new Set(Array.isArray(groupIds) ? groupIds : [])) {
+          if (!homeOfGroup(groupId)) continue;
+          await handle(prev == null ? { ...first, type: 'moveGroup', groupId }
+            : { type: 'moveGroup', windowId: msg.windowId, groupId, targetId: prev, where: 'after' });
+          prev = groupId;
+        }
         break;
       }
+      case 'newGroupForTab':
+        made = await groupTabs([msg.tabId]);
+        break;
+      case 'groupTabs':
+        made = await groupTabs(Array.isArray(msg.tabIds) ? msg.tabIds : []);
+        break;
       case 'archiveGroup': {
         if (!g) break;
         const ids = subtree(home.groups, g.id);
@@ -1283,6 +1326,7 @@ export function createBackground({
     }
     gc();
     changed();
+    return made;
   }
 
   // ---- context menu ------------------------------------------------------
@@ -1316,10 +1360,8 @@ export function createBackground({
     };
     const id = String(itemId);
     if (id === MENU.archiveTab) return handle({ type: 'closeTab', tabId });
-    if (id === MENU.moveNew) {
-      await handle({ type: 'newGroupForTab', tabId });
-      return edit(groupIdOfTab(tabId));
-    }
+    if (id === MENU.moveNew) return edit(await handle({ type: 'newGroupForTab', tabId }));
+    if (id === MENU.groupTabs) return edit(await handle({ type: 'groupTabs', tabIds: menu.tabIds }));
     if (id.startsWith(MENU.moveTo)) {
       return handle({ type: 'moveTab', tabId, groupId: id.slice(MENU.moveTo.length) });
     }
@@ -1430,13 +1472,15 @@ export function createBackground({
           return;
         }
         if (msg.type === 'menuTarget') {
-          menu = { port, tabId: msg.tabId ?? null, groupId: msg.groupId ?? null };
+          menu = { port, tabId: msg.tabId ?? null, groupId: msg.groupId ?? null, tabIds: msg.tabIds ?? [] };
           return;
         }
-        handle(msg).then(() => {
-          // A new workspace opens with its name ready to type over.
-          if (msg.type !== 'newWorkspace') return;
-          try { port.postMessage({ type: 'editWorkspace', wsId: activeOf(msg.windowId) }); } catch { /* sidebar closed */ }
+        handle(msg).then((made) => {
+          // A new workspace or group opens with its name ready to type over.
+          const edit = msg.type === 'newWorkspace' ? { type: 'editWorkspace', wsId: activeOf(msg.windowId) }
+            : msg.type === 'groupTabs' && made ? { type: 'editGroup', groupId: made } : null;
+          if (!edit) return;
+          try { port.postMessage(edit); } catch { /* sidebar closed */ }
         }).catch(reportError);
       });
       push();

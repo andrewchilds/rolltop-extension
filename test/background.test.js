@@ -573,6 +573,41 @@ test('menu clicks on a tab row: archive, move to a group, move to a new group', 
   assert.equal(bg.state.archive[0].url, 'https://other.org/');
 });
 
+test('several tabs are grouped together, from the menu or from the sidebar, and the group is named next', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://example.com/a', title: 'A' },
+    { id: 2, url: 'https://other.org/', title: 'B' },
+    { id: 3, url: 'https://third.net/', title: 'C' },
+    { id: 4, url: 'https://fourth.io/', title: 'D' },
+  ]);
+  const port = sidebarPort(browser);
+  const edits = () => port.received.filter((m) => m.type === 'editGroup');
+
+  port.send({ type: 'menuTarget', tabId: 2, tabIds: [1, 2] });
+  await bg.menuClick('rolltop-tab-group', 2);
+  const made = groupOf(bg, 1);
+  assert.equal(made.name, 'New group');
+  assert.equal(made.manual, true);
+  assert.equal(made.parentId, null);
+  assert.equal(groupOf(bg, 2).id, made.id);
+  assert.equal(bg.assign.get(2).manual, true);
+  assert.notEqual(groupOf(bg, 3).id, made.id);
+  assert.deepEqual(edits(), [{ type: 'editGroup', groupId: made.id }]);
+
+  await bg.handle({ type: 'renameGroup', groupId: made.id, name: 'First pair' });
+  // Ids of tabs that are gone are skipped.
+  port.send({ type: 'groupTabs', windowId: 1, tabIds: [3, 99, 4] });
+  await tick();
+  const second = groupOf(bg, 3);
+  assert.notEqual(second.id, made.id);
+  assert.equal(groupOf(bg, 4).id, second.id);
+  assert.deepEqual(edits()[1], { type: 'editGroup', groupId: second.id });
+
+  port.send({ type: 'groupTabs', windowId: 1, tabIds: [99] });
+  await tick();
+  assert.equal(edits().length, 2);
+});
+
 test('menu clicks on a group row act on the group the sidebar reported', async () => {
   const { bg, browser } = await boot([
     { id: 1, url: 'https://example.com/a' },
@@ -665,6 +700,61 @@ test('a tab dropped beside another joins its group and takes that place in the s
   await bg.handle({ type: 'moveTab', tabId: 3, groupId: b, nearTabId: 4, after: false });
   assert.deepEqual(order(), [3, 4, 1, 2]);
   assert.deepEqual(Object.keys(bg.state.groups), [b]);
+});
+
+test('several tabs dropped together join the group side by side, in the order given', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://a.com/' },
+    { id: 2, url: 'https://b.com/x' },
+    { id: 3, url: 'https://b.com/y' },
+    { id: 4, url: 'https://c.com/' },
+    { id: 5, url: 'https://d.com/' },
+  ]);
+  const b = bg.assign.get(2).groupId;
+  const order = () => browser._tabs.map((t) => t.id);
+
+  await bg.handle({ type: 'moveTabs', tabIds: [1, 99, 4, 5], groupId: b, nearTabId: 3, after: false });
+  assert.deepEqual(order(), [2, 1, 4, 5, 3]);
+  assert.deepEqual([1, 4, 5].map((id) => bg.assign.get(id).groupId), [b, b, b]);
+  assert.equal(bg.assign.get(5).manual, true);
+
+  // Dropped beside one of their own, they gather there.
+  await bg.handle({ type: 'moveTabs', tabIds: [2, 5], groupId: b, nearTabId: 5, after: true });
+  assert.deepEqual(order(), [1, 4, 2, 5, 3]);
+
+  // Onto a group's row: the first stays where it is in the strip, as one tab would.
+  const c = await bg.handle({ type: 'groupTabs', tabIds: [3] });
+  await bg.handle({ type: 'moveTabs', tabIds: [1, 2], groupId: c });
+  assert.deepEqual([1, 2, 3].map((id) => bg.assign.get(id).groupId), [c, c, c]);
+  assert.deepEqual(order(), [1, 2, 4, 5, 3]);
+});
+
+test('several groups dropped together land side by side, in the order given', async () => {
+  const { bg } = await boot([
+    { id: 1, url: 'https://a.com/' },
+    { id: 2, url: 'https://b.com/' },
+    { id: 3, url: 'https://c.com/' },
+    { id: 4, url: 'https://d.com/' },
+  ]);
+  const [a, b, c, d] = [1, 2, 3, 4].map((id) => bg.assign.get(id).groupId);
+  const name = { [a]: 'a', [b]: 'b', [c]: 'c', [d]: 'd' };
+  const under = (parentId) => Object.values(bg.state.groups)
+    .filter((g) => (g.parentId || null) === parentId).sort((x, y) => x.order - y.order).map((g) => name[g.id]).join('');
+  assert.equal(under(null), 'abcd');
+
+  await bg.handle({ type: 'moveGroups', groupIds: [a, 'gone', b], targetId: d, where: 'after' });
+  assert.equal(under(null), 'cdab');
+  await bg.handle({ type: 'moveGroups', groupIds: [d, a], targetId: c, where: 'before' });
+  assert.equal(under(null), 'dacb');
+  await bg.handle({ type: 'moveGroups', groupIds: [c, d], targetId: b, where: 'into' });
+  assert.equal(under(null), 'ab');
+  assert.equal(under(b), 'cd');
+  // Dropped beside one of their own, they gather there.
+  await bg.handle({ type: 'moveGroups', groupIds: [a, b], targetId: b, where: 'before' });
+  assert.equal(under(null), 'ab');
+  await bg.handle({ type: 'moveGroups', groupIds: [c, d], targetId: a, where: 'before' });
+  assert.equal(under(null), 'cdab');
+  assert.equal(under(b), '');
 });
 
 test('tabs and sub-groups take any place among each other in a group', async () => {

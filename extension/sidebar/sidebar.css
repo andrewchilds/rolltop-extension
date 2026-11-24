@@ -299,6 +299,8 @@ nav {
 .section.line { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--off); }
 .row.tab { height: 28px; }
 .row.tab.current { background: var(--card); box-shadow: var(--on-shadow); }
+/* Rows picked to be grouped or dragged together. */
+.row.selected { --sel: color-mix(in srgb, var(--accent) 18%, var(--bg)); background: var(--sel); box-shadow: none; opacity: 1 !important; }
 
 .row-main {
   flex: 1;
@@ -466,6 +468,7 @@ nav {
   pointer-events: none;
 }
 .tab.current .acts { background: linear-gradient(to right, transparent, var(--card) 12px); }
+.tab.selected .acts { background: linear-gradient(to right, transparent, var(--sel) 12px); }
 .tab:hover .acts, .tab:focus-within .acts, .tab .acts:has([aria-expanded="true"]) { opacity: 1; pointer-events: auto; }
 .tab.editing .acts, .tab.dragging .acts { display: none; }
 .act {

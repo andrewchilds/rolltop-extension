@@ -10,6 +10,7 @@ export const PIN_MAX = 6; // pinned tiles in one row
 // the sidebar adjusts the group items when its menu opens.
 export const MENU = {
   archiveTab: 'rolltop-tab-archive',
+  groupTabs: 'rolltop-tab-group',
   move: 'rolltop-move',
   moveNew: 'rolltop-move-new',
   moveSep: 'rolltop-move-sep',
