@@ -378,17 +378,39 @@ nav {
 .row.enter { overflow: hidden; animation: row-in 200ms ease-in-out; }
 .row.exit { overflow: hidden; pointer-events: none; animation: row-out 200ms ease-in-out forwards; }
 .row.dragging { opacity: 0.4 !important; }
-/* Insertion lines are their own boxes: a shadow would bend around the corners. */
-.row.drop-before::after, .row.drop-after::after {
+/* Where a drag would land: a line between two rows, starting at the indent of
+   the level it would land on, with the group it would join picked out. The
+   line is its own box: a shadow would bend around the row's corners. */
+#list > .drop-before, #list > .drop-after { position: relative; z-index: 1; }
+#list > .drop-before::after, #list > .drop-after::after {
   content: "";
   position: absolute;
+  left: calc(var(--drop-x, 0px) + 7px);
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
   background: var(--accent);
   pointer-events: none;
 }
-.row.drop-before::after, .row.drop-after::after { left: 0; right: 0; height: 2px; }
-.row.drop-before::after { top: -2px; }
-.row.drop-after::after { bottom: -2px; }
+#list > .drop-before::after { top: -2px; }
+#list > .drop-after::after { bottom: -2px; }
+/* A ring where the line starts, so its level reads at a glance. */
+#list > .drop-before::before, #list > .drop-after::before {
+  content: "";
+  position: absolute;
+  left: var(--drop-x, 0px);
+  width: 4px;
+  height: 4px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg);
+  pointer-events: none;
+  z-index: 1;
+}
+#list > .drop-before::before { top: -5px; }
+#list > .drop-after::before { bottom: -5px; }
 .row.drop-into { background: var(--hover); box-shadow: inset 0 0 0 2px var(--accent); }
+.row.drop-parent { background: var(--hover); }
 .ttitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Hover actions. A group row keeps a slot for them. */

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBackground } from '../src/background/core.js';
+import { buildView } from '../extension/lib/model.js';
 
 const DAY = 86400000;
 const NOW = 1_800_000_000_000;
@@ -664,6 +665,61 @@ test('a tab dropped beside another joins its group and takes that place in the s
   await bg.handle({ type: 'moveTab', tabId: 3, groupId: b, nearTabId: 4, after: false });
   assert.deepEqual(order(), [3, 4, 1, 2]);
   assert.deepEqual(Object.keys(bg.state.groups), [b]);
+});
+
+test('tabs and sub-groups take any place among each other in a group', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://a.com/1' },
+    { id: 2, url: 'https://a.com/2' },
+    { id: 3, url: 'https://b.com/' },
+    { id: 4, url: 'https://c.com/' },
+    { id: 5, url: 'https://d.com/' },
+  ]);
+  const [a, b, c] = [1, 3, 4].map((id) => bg.assign.get(id).groupId);
+  // The group's rows as the sidebar lists them: tab ids and sub-group ids.
+  const listed = async () => {
+    const snap = await bg.snapshot();
+    const rows = buildView({ tabs: snap.tabs, groups: snap.spaces[0].groups, auto: false, query: '', now: NOW }).rows;
+    return rows.filter((r) => r.id !== a && r.kind !== 'section').map((r) => (r.kind === 'group' ? r.id : r.tabId));
+  };
+  const strip = () => browser._tabs.map((t) => t.id);
+  await bg.handle({ type: 'moveGroup', groupId: b, targetId: a, where: 'into' });
+  await bg.handle({ type: 'moveGroup', groupId: c, targetId: a, where: 'into' });
+  assert.deepEqual((await listed()).slice(0, 6), [1, 2, b, 3, c, 4]);
+
+  await bg.handle({ type: 'moveTab', tabId: 2, groupId: a, nearGroupId: b, after: true });
+  assert.deepEqual(await listed(), [1, b, 3, 2, c, 4, bg.assign.get(5).groupId, 5]);
+  await bg.handle({ type: 'moveTab', tabId: 5, groupId: a, nearGroupId: c, after: true });
+  assert.deepEqual(await listed(), [1, b, 3, 2, c, 4, 5], 'a tab from another group lands below the last sub-group');
+  await bg.handle({ type: 'moveTab', tabId: 1, groupId: a, nearGroupId: c, after: false });
+  assert.deepEqual(await listed(), [b, 3, 2, 1, c, 4, 5]);
+  assert.deepEqual(strip(), [2, 1, 3, 4, 5], 'last of the tabs before that sub-group, in the strip too');
+  await bg.handle({ type: 'moveTab', tabId: 5, groupId: a, nearTabId: 2, after: false });
+  assert.deepEqual(await listed(), [b, 3, 5, 2, 1, c, 4], 'beside a tab it shares that tab\'s place');
+  await bg.handle({ type: 'moveTab', tabId: 5, groupId: a, nearGroupId: b, after: false });
+  assert.deepEqual(await listed(), [5, b, 3, 2, 1, c, 4]);
+
+  // A group dropped beside a tab splits the tabs around it.
+  await bg.handle({ type: 'moveGroup', groupId: c, nearTabId: 1, after: false });
+  assert.deepEqual(await listed(), [5, b, 3, 2, c, 4, 1]);
+  await bg.handle({ type: 'moveGroup', groupId: b, nearTabId: 1, after: true });
+  assert.deepEqual(await listed(), [5, 2, c, 4, 1, b, 3]);
+  // Beside a group it goes right next to it, on the near side of the tabs there.
+  await bg.handle({ type: 'moveGroup', groupId: b, targetId: c, where: 'after' });
+  assert.deepEqual(await listed(), [5, 2, c, 4, b, 3, 1]);
+  await bg.handle({ type: 'moveGroup', groupId: b, targetId: c, where: 'before' });
+  assert.deepEqual(await listed(), [5, 2, b, 3, c, 4, 1]);
+  await bg.handle({ type: 'moveGroup', groupId: b, targetId: a, where: 'into' });
+  assert.deepEqual(await listed(), [5, 2, c, 4, 1, b, 3], 'into a group is last in it');
+
+  // Filed elsewhere, a tab forgets the place it had.
+  await bg.handle({ type: 'moveTab', tabId: 1, groupId: c });
+  await bg.handle({ type: 'moveTab', tabId: 1, groupId: a });
+  assert.deepEqual(await listed(), [5, 2, 1, c, 4, b, 3]);
+  // Out of the group, a sub-group leaves the tabs in the order they had.
+  await bg.handle({ type: 'moveGroup', groupId: b, where: 'into' });
+  assert.equal(bg.state.groups[b].parentId, null);
+  assert.deepEqual((await listed()).slice(0, 5), [5, 2, 1, c, 4]);
 });
 
 test('groups can be reordered, nested and un-nested, within the depth limit', async () => {

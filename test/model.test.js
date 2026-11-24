@@ -36,6 +36,27 @@ test('rows follow manual order with children after own tabs', () => {
   ]);
 });
 
+test('a tab with an order sits among the sub-groups of its group, after the one it names', () => {
+  const snap = mockSnapshot(NOW);
+  const { transit, stay } = snap.groups;
+  const k4 = snap.tabs.find((t) => t.key === 'k4');
+  const under = () => {
+    const rows = buildView({ ...shownIn(snap), auto: false, query: '', now: NOW }).rows;
+    const from = rows.findIndex((r) => r.id === 'trip');
+    const to = rows.findIndex((r) => r.id === 'tax');
+    return rows.slice(from + 1, to).map((r) => (r.kind === 'group' ? r.id : snap.tabs.find((t) => t.id === r.tabId).key));
+  };
+  assert.deepEqual(under(), ['k4', 'transit', 'k2', 'k5', 'stay', 'k6']);
+  k4.order = transit.order;
+  assert.deepEqual(under(), ['transit', 'k2', 'k5', 'k4', 'stay', 'k6']);
+  k4.order = stay.order;
+  assert.deepEqual(under(), ['transit', 'k2', 'k5', 'stay', 'k6', 'k4']);
+  // The tab stays put when a sub-group is moved past it.
+  k4.order = transit.order;
+  transit.order = stay.order + 1;
+  assert.deepEqual(under(), ['k4', 'stay', 'k6', 'transit', 'k2', 'k5']);
+});
+
 test('collapsed groups hide their tabs; archived-only groups are not listed', () => {
   const v = view();
   assert.equal(group(v, 'Tax paperwork').open, false);

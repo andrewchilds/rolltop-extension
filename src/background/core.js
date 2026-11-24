@@ -4,7 +4,7 @@
 // The browser API and the AI classifier are injected so this runs under Node.
 
 import {
-  DAY, MENU, canNest, chain, childMap, subtree, pathName, isHardPinned, matchesQuery,
+  DAY, MENU, canNest, chain, childMap, slotOf, subtree, pathName, isHardPinned, matchesQuery,
 } from '../../extension/lib/model.js';
 import { applyPlan, clean, gcGroups, heuristicPlan } from '../../extension/lib/plan.js';
 import { FORMAT, VERSION, mergeGroups, readWorkspace } from '../../extension/lib/workspace.js';
@@ -196,6 +196,7 @@ export function createBackground({
   function file(tabId, groupId, host, manual = false) {
     const e = byTab.get(tabId);
     if (!e) return;
+    if (e.rec.groupId !== groupId) delete e.rec.order; // its place among the old group's sub-groups
     e.rec.groupId = groupId;
     e.rec.host = host;
     if (manual) e.rec.manual = true;
@@ -204,6 +205,7 @@ export function createBackground({
 
   function unfile(rec) {
     rec.groupId = null;
+    delete rec.order;
     delete rec.host;
     delete rec.manual;
   }
@@ -477,6 +479,7 @@ export function createBackground({
         continue;
       }
       rec.groupId = mapped(rec.groupId);
+      delete rec.order; // the groups it was placed among are renumbered over there
       to.tabs.push(rec);
       const e = byTab.get(open.get(rec.uid));
       if (e) e.ws = to.id;
@@ -514,6 +517,7 @@ export function createBackground({
           // A private tab has no record; it shows in whichever workspace is open.
           ws: e ? e.ws : null,
           index: t.index,
+          order: rec ? rec.order ?? null : null,
           title: t.title || '',
           name: (rec && rec.name) || '',
           url: t.url || '',
@@ -993,6 +997,22 @@ export function createBackground({
     if (index !== tab.index) await browser.tabs.move(tab.id, { index });
   }
 
+  // A tab's place among its group's sub-groups (see slotOf in model.js).
+  function setOrder(rec, order) {
+    if (order == null) delete rec.order;
+    else rec.order = order;
+  }
+
+  // The tabs filed directly in a group that one window lists, in tab order.
+  async function listedTabs(home, groupId, windowId) {
+    return (await browser.tabs.query({}))
+      .filter((t) => {
+        const own = byTab.get(t.id);
+        return t.windowId === windowId && own && own.ws === home.id && own.rec.groupId === groupId && !own.rec.favorite;
+      })
+      .sort((a, b) => a.index - b.index);
+  }
+
   async function handle(msg) {
     const home = msg.groupId ? homeOfGroup(msg.groupId) : null;
     const g = home ? home.groups[msg.groupId] : null;
@@ -1068,37 +1088,82 @@ export function createBackground({
         else delete e.rec.name;
         break;
       }
+      // Drag and drop of a tab: into a group, and there beside one of its tabs
+      // (`nearTabId`) or one of its sub-groups (`nearGroupId`).
       case 'moveTab': {
         if (!g || !e || e.ws !== home.id) break;
         const tab = await browser.tabs.get(msg.tabId);
+        const nearTab = msg.nearTabId != null && msg.nearTabId !== tab.id ? byTab.get(msg.nearTabId) : null;
+        const subs = childMap(home.groups).get(g.id) || [];
+        const at = subs.indexOf(home.groups[msg.nearGroupId]);
         file(tab.id, g.id, hostOf(tab.url), true);
         queue.delete(tab.id);
         expand(home, g.id);
-        // Dropped beside another tab: take that place in the tab strip too.
-        if (msg.nearTabId != null) await placeBeside(tab, msg.nearTabId, msg.after);
+        if (nearTab && nearTab.ws === home.id && nearTab.rec.groupId === g.id) {
+          // Beside another tab: among the sub-groups it sits where that tab
+          // does, and it takes that place in the tab strip too.
+          setOrder(e.rec, nearTab.rec.order);
+          await placeBeside(tab, msg.nearTabId, msg.after);
+        } else if (at >= 0) {
+          // Beside a sub-group: last of the tabs before it, or first of those after.
+          const slot = at + (msg.after ? 1 : 0);
+          setOrder(e.rec, slot ? subs[slot - 1].order : null);
+          const there = (await listedTabs(home, g.id, tab.windowId))
+            .filter((t) => t.id !== tab.id && slotOf(subs, byTab.get(t.id).rec.order) === slot);
+          const near = msg.after ? there[0] : there[there.length - 1];
+          if (near) await placeBeside(tab, near.id, !msg.after);
+        }
         break;
       }
-      // Drag and drop of a group: beside another group, or into it.
+      // Drag and drop of a group: beside another group (`targetId`, `where`
+      // before or after), last in one (`where` into; no `targetId` for the top
+      // level), or beside a tab of the group it joins (`nearTabId`, `after`).
       case 'moveGroup': {
-        const target = home ? home.groups[msg.targetId] : null;
-        if (!g || !target || g === target) break;
+        if (!g) break;
+        const target = msg.targetId != null ? home.groups[msg.targetId] : null;
+        const nearTab = msg.nearTabId != null ? byTab.get(msg.nearTabId) : null;
         const into = msg.where === 'into';
-        const parentId = into ? target.id : target.parentId || null;
+        let parentId = null;
+        if (nearTab) {
+          if (nearTab.ws !== home.id || !home.groups[nearTab.rec.groupId]) break;
+          parentId = nearTab.rec.groupId;
+        } else if (msg.targetId != null) {
+          if (!target || g === target) break;
+          parentId = into ? target.id : target.parentId || null;
+        } else if (!into) {
+          break;
+        }
         if (!canNest(home.groups, g.id, parentId)) break;
         const sibs = (childMap(home.groups).get(parentId) || []).filter((s) => s !== g);
-        let prev = sibs[sibs.length - 1];
-        let next;
-        if (!into) {
-          const i = sibs.indexOf(target) + (msg.where === 'after' ? 1 : 0);
-          prev = sibs[i - 1];
-          next = sibs[i];
+        // The tabs sharing the place it takes among its siblings, split into
+        // those that end up before it and those after.
+        let slot = sibs.length;
+        let split = 0;
+        let shown = [];
+        if (nearTab) {
+          slot = slotOf(sibs, nearTab.rec.order);
+          const near = await browser.tabs.get(msg.nearTabId);
+          shown = (await listedTabs(home, parentId, near.windowId)).map((t) => byTab.get(t.id).rec);
+          split = shown.indexOf(nearTab.rec) + (msg.after ? 1 : 0);
+        } else if (!into) {
+          slot = sibs.indexOf(target) + (msg.where === 'after' ? 1 : 0);
         }
+        const sharing = parentId == null ? []
+          : home.tabs.filter((r) => r.groupId === parentId && slotOf(sibs, r.order) === slot);
+        const prev = sibs[slot - 1];
+        const next = sibs[slot];
         g.order = prev && next ? (prev.order + next.order) / 2 : prev ? prev.order + 1 : next ? next.order - 1 : 1;
         g.parentId = parentId;
-        // At the top level it lands on the target's side of the line; nested,
-        // it is on its parent's.
-        g.pinned = parentId == null && !!target.pinned;
-        if (into) expand(home, target.id);
+        for (const rec of sharing) {
+          // Tabs this window does not list (another window's, favorites) stay before it.
+          const at = shown.indexOf(rec);
+          const before = nearTab ? at < 0 || at < split : msg.where !== 'after';
+          setOrder(rec, before ? (prev ? prev.order : null) : g.order);
+        }
+        // At the top level it lands on its neighbour's side of the line;
+        // nested, it is on its parent's.
+        g.pinned = parentId == null && !!target && !!target.pinned;
+        if (parentId != null) expand(home, parentId);
         break;
       }
       case 'newGroupForTab': {

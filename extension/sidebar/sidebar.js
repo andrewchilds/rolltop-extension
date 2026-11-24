@@ -1,4 +1,4 @@
-import { buildView, canNest, MENU, PIN_MAX, UNGROUPED } from '../lib/model.js';
+import { buildView, canNest, chain, MENU, PIN_MAX, UNGROUPED } from '../lib/model.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG = 'http://www.w3.org/2000/svg';
@@ -187,7 +187,8 @@ let editingTab = null; // id of the tab being renamed in its row or pinned tile
 let editingWs = null; // id of the workspace being renamed in the footer
 let menuTarget = null; // what this sidebar's open context menu was opened on
 let drag = null; // what is being dragged: { tabId }, { groupId } or { pinId } for a pinned tile
-let marked = null; // the drop target currently highlighted
+let marked = null; // the drop currently shown in the list
+const rowOf = new WeakMap(); // list node -> the view row it was built from
 let gap = null; // the drop zone open in the pin grid: { spot, zone, node }
 let pinLayout = ''; // the pin grid's rows of tab ids as last rendered, as JSON
 
@@ -298,6 +299,7 @@ function renderList(rows) {
         : group ? groupNode(r) : tabNode(r);
     const key = section ? 's:' + r.id : fold ? 'o:' + r.groupId : group ? 'g:' + r.id : 't:' + r.tabId;
     node.dataset.key = key;
+    rowOf.set(node, r);
     const was = old.get(key);
     if (animate && !was) node.classList.add('enter');
     if (animate && was && group && was.classList.contains('open') !== r.open) turned.push(node);
@@ -604,11 +606,15 @@ document.addEventListener('keydown', (event) => {
 });
 
 // ---- drag and drop -----------------------------------------------------------
-// A tab dropped on a group joins it; dropped on a tab it also takes the place
-// before or after it. A group dropped on the middle of a group nests in it;
-// on the top or bottom edge it becomes its sibling there. Over the pin grid a
-// tab or pinned tile opens a drop zone where it would land: within a row, the
-// tiles there squeezing aside, or as a row of its own. Dropping sets the grid.
+// In the list a drag shows a line between two rows, where the dragged tab or
+// group would land. Where that gap could belong to more than one group (below
+// the last row of a nested group, say), the pointer's x picks the level: the
+// line starts at the indent the pointer is over. A tab can take any place in a
+// group, among its tabs and its sub-groups alike. The middle of a group's row
+// drops into that group instead, which is the way into a collapsed one. Over
+// the pin grid a tab or pinned tile opens a drop zone where it would land:
+// within a row, the tiles there squeezing aside, or as a row of its own.
+// Dropping sets the grid.
 
 // A spot in the pin grid: in `row` before the tile `before` (last when null),
 // or, with no `row`, as a new row before the row `before` (at the end when null).
@@ -701,41 +707,120 @@ function applyPinLayout(rows) {
   }));
 }
 
+const INDENT = 14; // px per level of nesting, as the rows are drawn
+
+// How deep a row sits: 0 for a top-level group, and a group's tabs one level
+// below the group.
+const levelOf = (r) => (r.kind === 'group' ? r.depth : r.depth + 1);
+// The groups a row is in, from the top level down, a group's own id last.
+// Empty for what takes no drops: section names, Ungrouped and its tabs.
+const pathOf = (r) => (!r || r.kind === 'section' ? [] : chain(snap.groups, r.kind === 'group' ? r.id : r.groupId));
+
+// The places between two neighbouring rows, one per level of nesting from the
+// deepest (inside the row above) out to the level of the row below. Each is
+// { level, parentId, near, after }: in group `parentId` (null for the top
+// level), after or before `near`, a { tabId } or { groupId } there. Without
+// `near` there is nothing shown in the group to be beside.
+function spotsBetween(above, below) {
+  const path = pathOf(above);
+  if (above && above.kind !== 'section' && !path.length) return []; // under Ungrouped
+  const under = pathOf(below).length ? levelOf(below) : 0;
+  const deepest = above && above.kind === 'group' && !above.open ? path.length - 1 : path.length;
+  const spots = [];
+  for (let level = under; level <= deepest; level += 1) {
+    const spot = { level, parentId: level ? path[level - 1] : null, near: null, after: true };
+    if (level < path.length) {
+      spot.near = { groupId: path[level] }; // past the group the row above is in
+    } else if (above && above.kind === 'tab') {
+      spot.near = { tabId: above.tabId };
+    } else if (level === under && pathOf(below).length && below.kind !== 'older') {
+      // First in the group, or at the top of the list: ahead of the row below.
+      spot.near = below.kind === 'tab' ? { tabId: below.tabId } : { groupId: below.id };
+      spot.after = false;
+    }
+    spots.push(spot);
+  }
+  return spots;
+}
+
+// The drop a pointer over the list stands for: { node, where, x, parent, msg }.
+// `node` is the row to mark, `where` how (before or after it for a line
+// starting at `x`, or into it), `parent` the row of the group being joined.
+function listDrop(event) {
+  const list = $('list');
+  if (!list.contains(event.target)) return null;
+  const nodes = [...list.children].filter((n) => n.dataset.key); // not the rows sliding shut
+  const rects = nodes.map((n) => n.getBoundingClientRect());
+  const y = event.clientY;
+  let at = rects.findIndex((r) => y < r.top + r.height / 2);
+  if (at < 0) at = nodes.length;
+  const tabId = drag.tabId;
+  const fits = (parentId) => (tabId != null ? parentId != null : canNest(snap.groups, drag.groupId, parentId));
+
+  // The middle of a group's row: into that group.
+  for (const i of [at - 1, at]) {
+    const row = rowOf.get(nodes[i]);
+    if (!row || row.kind !== 'group' || row.id === UNGROUPED || !fits(row.id)) continue;
+    const frac = (y - rects[i].top) / rects[i].height;
+    if (frac < 0.25 || frac >= 0.75) continue;
+    return {
+      node: nodes[i],
+      where: 'into',
+      msg: tabId != null
+        ? ['moveTab', { tabId, groupId: row.id }]
+        : ['moveGroup', { groupId: drag.groupId, targetId: row.id, where: 'into' }],
+    };
+  }
+
+  const spots = spotsBetween(rowOf.get(nodes[at - 1]), rowOf.get(nodes[at])).filter((s) => fits(s.parentId));
+  if (!spots.length) return null;
+  // The level whose indent the pointer is over, or the nearest one on offer.
+  const want = Math.floor((event.clientX - list.getBoundingClientRect().left) / INDENT);
+  const spot = spots.reduce((best, s) => (Math.abs(s.level - want) < Math.abs(best.level - want) ? s : best));
+  const { parentId, near, after } = spot;
+  let msg;
+  if (tabId != null) {
+    const beside = !near ? {} : near.tabId != null ? { nearTabId: near.tabId, after } : { nearGroupId: near.groupId, after };
+    msg = ['moveTab', { tabId, groupId: parentId, ...beside }];
+  } else if (near && near.tabId != null) {
+    msg = ['moveGroup', { groupId: drag.groupId, nearTabId: near.tabId, after }];
+  } else if (near) {
+    msg = ['moveGroup', { groupId: drag.groupId, targetId: near.groupId, where: after ? 'after' : 'before' }];
+  } else {
+    msg = ['moveGroup', { groupId: drag.groupId, targetId: parentId, where: 'into' }];
+  }
+  // The line hangs off a full-width row: the one above where there is one.
+  const isRow = (n) => !!n && n.classList.contains('row');
+  const below = !isRow(nodes[at - 1]) && (isRow(nodes[at]) || !nodes[at - 1]);
+  return {
+    node: nodes[below ? at : at - 1],
+    where: below ? 'before' : 'after',
+    x: spot.level * INDENT,
+    parent: parentId ? nodes.find((n) => n.dataset.key === 'g:' + parentId) : null,
+    msg,
+  };
+}
+
 function dropFor(event) {
   if (!drag || !snap || !event.target.closest) return null;
   if (drag.groupId == null) {
     const drop = pinDrop(event);
     if (drop || drag.pinId != null) return drop;
   }
-  const row = event.target.closest('#list .row');
-  if (!row) return null;
-  const { ctxTab, ctxGroup, ctxIn } = row.dataset;
-  const rect = row.getBoundingClientRect();
-  const y = (event.clientY - rect.top) / rect.height;
-  if (drag.tabId != null) {
-    if (ctxGroup) return { row, where: 'into', msg: ['moveTab', { tabId: drag.tabId, groupId: ctxGroup }] };
-    if (!ctxIn || Number(ctxTab) === drag.tabId) return null;
-    const after = y > 0.5;
-    return {
-      row,
-      where: after ? 'after' : 'before',
-      msg: ['moveTab', { tabId: drag.tabId, groupId: ctxIn, nearTabId: Number(ctxTab), after }],
-    };
-  }
-  if (!ctxGroup || ctxGroup === drag.groupId) return null;
-  const parentOf = (where) => (where === 'into' ? ctxGroup : snap.groups[ctxGroup].parentId || null);
-  let where = y < 0.25 ? 'before' : y > 0.75 ? 'after' : 'into';
-  // Too deep to nest here, or its own descendant: offer the nearer edge instead.
-  if (!canNest(snap.groups, drag.groupId, parentOf(where))) where = y < 0.5 ? 'before' : 'after';
-  if (!canNest(snap.groups, drag.groupId, parentOf(where))) return null;
-  return { row, where, msg: ['moveGroup', { groupId: drag.groupId, targetId: ctxGroup, where }] };
+  return listDrop(event);
 }
 
-// Highlights the list row a drop would land on. The pin grid shows its zone instead.
+// Shows the drop a pointer over the list stands for. The pin grid shows its zone instead.
 function markDrop(drop) {
-  if (marked) marked.row.classList.remove('drop-' + marked.where);
-  marked = drop && drop.row ? drop : null;
-  if (marked) marked.row.classList.add('drop-' + marked.where);
+  if (marked) {
+    marked.node.classList.remove('drop-' + marked.where);
+    if (marked.parent) marked.parent.classList.remove('drop-parent');
+  }
+  marked = drop && drop.node ? drop : null;
+  if (!marked) return;
+  marked.node.classList.add('drop-' + marked.where);
+  if (marked.where !== 'into') marked.node.style.setProperty('--drop-x', marked.x + 'px');
+  if (marked.parent) marked.parent.classList.add('drop-parent');
 }
 
 document.addEventListener('dragstart', (event) => {

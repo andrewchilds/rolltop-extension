@@ -88,6 +88,15 @@ export function canNest(groups, id, parentId) {
   return chain(groups, parentId).length + height(id) <= MAX_DEPTH;
 }
 
+// A group lists its own tabs and its sub-groups in one sequence. The sub-groups
+// are in manual order. A tab carries the `order` of the sub-group it comes
+// after, or none to come before them all; tabs sharing a place keep tab order.
+// Which place a tab with `order` takes among `subs`, a group's sub-groups in
+// order: 0 is before the first, 1 after it, and so on.
+export function slotOf(subs, order) {
+  return order == null ? 0 : subs.filter((s) => s.order <= order).length;
+}
+
 export function pathName(groups, id) {
   return chain(groups, id).map((x) => groups[x].name).join(' / ');
 }
@@ -269,9 +278,17 @@ export function buildView({
     const mine = (own.get(g.id) || []).filter((t) => !t.pinned);
     const old = auto ? mine.filter((t) => idleDays(t, now) >= OLDER_DAYS) : [];
     const showing = older.includes(g.id);
-    mine.filter((t) => showing || !old.includes(t)).forEach((t) => rows.push(tabRow(t, g.hue, depth)));
-    if (old.length) rows.push({ kind: 'older', groupId: g.id, count: old.length, open: showing, depth });
-    (kids.get(g.id) || []).forEach((k) => walk(k, depth + 1, hard));
+    // Own tabs and sub-groups share one sequence (see slotOf). The row for the
+    // older tabs closes the tabs that come before every sub-group.
+    const subs = kids.get(g.id) || [];
+    const slots = subs.map(() => []);
+    slots.push([]);
+    mine.filter((t) => showing || !old.includes(t)).forEach((t) => slots[slotOf(subs, t.order)].push(t));
+    slots.forEach((list, i) => {
+      list.forEach((t) => rows.push(tabRow(t, g.hue, depth)));
+      if (i === 0 && old.length) rows.push({ kind: 'older', groupId: g.id, count: old.length, open: showing, depth });
+      if (subs[i]) walk(subs[i], depth + 1, hard);
+    });
   };
   const roots = kids.get(null) || [];
   roots.filter((g) => g.pinned).forEach((g) => walk(g, 0, true));
