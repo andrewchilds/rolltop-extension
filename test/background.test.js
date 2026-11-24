@@ -653,6 +653,24 @@ test('a natively closed tab is archived like any other', async () => {
   assert.deepEqual(bg.state.archive.map((a) => a.title), ['Alpha notes']);
 });
 
+test('a closed tab the browser still lists is neither shown nor tracked again', async () => {
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://example.com/a', title: 'Alpha' },
+    { id: 2, url: 'https://other.org/', title: 'Other' },
+  ]);
+  const closing = { ...browser._tabs.find((t) => t.id === 1) };
+  browser.tabs.onRemoved.fire(1, {});
+  browser.tabs.onUpdated.fire(1, { title: 'Alpha' }, closing);
+  await tick();
+
+  assert.deepEqual((await bg.snapshot()).tabs.map((t) => t.id), [2]);
+  assert.equal(bg.assign.has(1), false);
+  assert.deepEqual(bg.state.archive.map((a) => a.title), ['Alpha']);
+
+  browser._tabs.splice(browser._tabs.findIndex((t) => t.id === 1), 1);
+  assert.deepEqual((await bg.snapshot()).tabs.map((t) => t.id), [2]);
+});
+
 test('closing the same page twice keeps one record, hidden from search while it is open', async () => {
   const { bg, browser } = await boot([
     { id: 1, url: 'https://example.com/a', title: 'Alpha' },

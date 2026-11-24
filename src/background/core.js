@@ -72,6 +72,9 @@ export function createBackground({
   let aiRetry = null;
   let aiFails = 0; // failures in a row that are worth retrying
   const archiving = new Set(); // tabIds being closed by archiveTabs
+  // tabIds whose removal was announced while the browser still lists them: a
+  // tab stays in tabs.query until its close animation ends.
+  const closed = new Set();
   const ports = new Set();
   const status = { sorting: false, error: '', saveError: '' };
   let running = null;
@@ -282,7 +285,7 @@ export function createBackground({
   // Gives a tab that just appeared a record in its window's workspace, at
   // once, then asks the session whether it is a tab that was here before.
   function track(tab) {
-    if (!tracked(tab) || tab.id == null || byTab.has(tab.id)) return;
+    if (!tracked(tab) || tab.id == null || byTab.has(tab.id) || closed.has(tab.id)) return;
     const home = space(activeOf(tab.windowId));
     const rec = makeRec(tab);
     home.tabs.push(rec);
@@ -510,7 +513,11 @@ export function createBackground({
   // ---- snapshots ---------------------------------------------------------
 
   async function snapshot() {
-    const tabs = await browser.tabs.query({});
+    const listed = await browser.tabs.query({});
+    for (const id of [...closed]) {
+      if (!listed.some((t) => t.id === id)) closed.delete(id);
+    }
+    const tabs = listed.filter((t) => !closed.has(t.id));
     const activeMap = {};
     windowsOf(tabs).forEach((windowId) => { activeMap[windowId] = activeOf(windowId); });
     return {
@@ -1588,6 +1595,7 @@ export function createBackground({
     });
     browser.tabs.onRemoved.addListener((tabId) => {
       const e = unbind(tabId);
+      closed.add(tabId);
       queue.delete(tabId);
       missed.delete(tabId);
       if (e) {
