@@ -121,7 +121,8 @@ async function restart(browser, opts = {}) {
 async function boot(tabs, opts = {}) {
   const browser = fakeBrowser(tabs, opts.stored);
   const bg = createBackground({
-    browser, classifyWithAI: opts.ai, now: opts.now || (() => NOW), delay: FAST, newId: browser._newId,
+    browser, classifyWithAI: opts.ai, splitWithAI: opts.split, now: opts.now || (() => NOW),
+    delay: { ...FAST, ...opts.delay }, newId: browser._newId,
   });
   await bg.start();
   await tick();
@@ -935,6 +936,189 @@ test('each sorting run is logged with where tabs went and why', async () => {
   assert.equal(browser._storage.log.length, 1);
   await bg.handle({ type: 'clearLog' });
   assert.deepEqual(bg.state.log, []);
+});
+
+test('a sorting run logs the tokens and time the AI call took', async () => {
+  const usage = { input: 900, output: 120, ms: 1500, model: 'claude-haiku-5-5' };
+  const ai = async ({ tabs }) => ({
+    newGroups: [{ ref: 'n', name: 'Kyoto in spring', label: 'Trip', parent: null }],
+    assignments: tabs.map((t) => ({ tabId: t.id, group: 'n' })),
+    renames: [],
+    usage,
+  });
+  const { bg } = await boot([{ id: 1, url: 'https://slowroutes.travel/kyoto' }], {
+    ai, stored: { settings: { apiKey: 'sk-test' } },
+  });
+  assert.deepEqual(bg.state.log[0].usage, usage);
+});
+
+test('favorites are filed by site and never sent to the AI, as tabs, titles or openers', async () => {
+  const calls = [];
+  const ai = async (req) => {
+    calls.push(req);
+    return {
+      newGroups: [{ ref: 'n', name: 'Standing desk', label: 'Shopping', parent: null }],
+      assignments: req.tabs.map((t) => ({ tabId: t.id, group: req.groups[0]?.id || 'n' })),
+      renames: [],
+    };
+  };
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://mail.example.com/', title: 'Inbox secret', pinned: true },
+    { id: 2, url: 'https://desks.example.org/a', title: 'Desk A' },
+  ], { ai, stored: { settings: { apiKey: 'sk-test' } } });
+  assert.equal(groupOf(bg, 1).name, 'example.com');
+  assert.equal(groupOf(bg, 2).name, 'Standing desk');
+
+  await browser.tabs.create({ url: 'https://desks.example.org/b', title: 'Desk B', openerTabId: 1 });
+  await tick();
+  await bg.runClassify();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].tabs[0].openerGroupId, null);
+  assert.doesNotMatch(JSON.stringify(calls), /mail\.example|Inbox secret/);
+
+  // A batch of nothing but favorites makes no call at all.
+  await browser.tabs.create({ url: 'https://chat.example.net/', pinned: true });
+  await tick();
+  await bg.runClassify();
+  assert.equal(calls.length, 2);
+  assert.equal(groupOf(bg, 101).name, 'example.net');
+
+  // Unpinned, it is an ordinary tab and the AI files it.
+  await bg.handle({ type: 'pinTab', tabId: 101, pinned: false });
+  await tick();
+  await bg.runClassify();
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2].tabs.map((t) => t.id), [101]);
+  assert.equal(groupOf(bg, 101).name, 'Standing desk');
+});
+
+test('tabs filed by site after an AI failure are sent again when the retry fires', async () => {
+  let up = false;
+  const calls = [];
+  const ai = async (req) => {
+    calls.push(req.tabs.map((t) => t.id));
+    if (!up) throw Object.assign(new Error('AI sorting could not reach the API.'), { retry: true });
+    return {
+      newGroups: [{ ref: 'n', name: 'Kyoto in spring', label: 'Trip', parent: null }],
+      assignments: req.tabs.map((t) => ({ tabId: t.id, group: 'n' })),
+      renames: [],
+    };
+  };
+  const { bg, browser } = await boot([
+    { id: 1, url: 'https://slowroutes.travel/kyoto' },
+    { id: 2, url: 'https://skycast.net/kyoto' },
+  ], { ai, delay: { aiRetry: 250 }, stored: { settings: { apiKey: 'sk-test' } } });
+  assert.equal(groupOf(bg, 1).name, 'slowroutes.travel');
+  // Moved by hand in the meantime: no longer the classifier's to place.
+  await bg.handle({ type: 'moveTab', tabId: 2, groupId: bg.assign.get(1).groupId });
+  // A title change does not jump the queue.
+  browser.tabs.onUpdated.fire(1, { title: 'Kyoto' }, { ...browser._tabs[0], title: 'Kyoto' });
+  await tick();
+  assert.equal(calls.length, 1);
+
+  up = true;
+  await tick(300);
+  await bg.runClassify();
+  assert.deepEqual(calls, [[1, 2], [1]]);
+  assert.equal(groupOf(bg, 1).name, 'Kyoto in spring');
+  assert.equal(groupOf(bg, 2).name, 'slowroutes.travel');
+  assert.equal((await bg.snapshot()).error, '');
+});
+
+test('a failure the user has to fix is not retried on a timer, but is when the settings change', async () => {
+  const calls = [];
+  const ai = async (req) => {
+    calls.push(req.apiKey);
+    if (req.apiKey === 'bad') throw new Error('AI sorting is off: the API key was rejected.');
+    return {
+      newGroups: [{ ref: 'n', name: 'Kyoto in spring', label: 'Trip', parent: null }],
+      assignments: req.tabs.map((t) => ({ tabId: t.id, group: 'n' })),
+      renames: [],
+    };
+  };
+  const { bg, browser } = await boot([{ id: 1, url: 'https://slowroutes.travel/kyoto' }], {
+    ai, delay: { aiRetry: 10 }, stored: { settings: { apiKey: 'bad' } },
+  });
+  await tick(40);
+  assert.deepEqual(calls, ['bad']);
+  browser.storage.onChanged.fire({ settings: { newValue: { apiKey: 'good' } } }, 'local');
+  await tick();
+  await bg.runClassify();
+  assert.deepEqual(calls, ['bad', 'good']);
+  assert.equal(groupOf(bg, 1).name, 'Kyoto in spring');
+});
+
+test('a group that has grown large is split into sub-groups, once per growth step', async () => {
+  const ai = async (req) => ({
+    newGroups: req.groups.length ? [] : [{ ref: 'n', name: 'Kyoto in spring', label: 'Trip', parent: null }],
+    assignments: req.tabs.map((t) => ({ tabId: t.id, group: req.groups[0]?.id || 'n' })),
+    renames: [],
+  });
+  const asked = [];
+  const split = async (req) => {
+    asked.push(req);
+    const stay = req.tabs.filter((t) => /stay/.test(t.url));
+    return {
+      newGroups: [
+        { ref: 's', name: 'Places to stay', label: 'Trip', parent: req.group.id },
+        { ref: 'lonely', name: 'One tab only', label: 'Trip', parent: req.group.id },
+      ],
+      assignments: [
+        ...stay.map((t) => ({ tabId: t.id, group: 's' })),
+        { tabId: req.tabs.find((t) => !/stay/.test(t.url)).id, group: 'lonely' },
+        // Not a sub-group of the one being split: ignored.
+        { tabId: req.tabs[req.tabs.length - 1].id, group: 'elsewhere' },
+      ],
+      renames: [],
+      usage: { input: 400, output: 60, ms: 800, model: 'claude-haiku-5-5' },
+    };
+  };
+  const urls = [1, 2, 3, 4, 5, 6, 7].map((n) => `https://site${n}.example/${n < 4 ? 'stay' : 'see'}`);
+  const { bg, browser } = await boot(
+    [{ id: 50, url: 'https://pinned.example/stay', pinned: true }, ...urls.map((url, i) => ({ id: i + 1, url }))],
+    { ai, split, stored: { settings: { apiKey: 'sk-test' } } },
+  );
+  const parent = bg.assign.get(1).groupId;
+  assert.equal(asked.length, 0, 'seven tabs is below the threshold');
+
+  await browser.tabs.create({ url: 'https://site8.example/see' });
+  await tick();
+  await bg.runClassify();
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].group.name, 'Kyoto in spring');
+  assert.deepEqual(asked[0].tabs.map((t) => t.id), [1, 2, 3, 4, 5, 6, 7, 100]);
+  const sub = groupOf(bg, 1);
+  assert.equal(sub.name, 'Places to stay');
+  assert.equal(sub.parentId, parent);
+  assert.deepEqual([1, 2, 3].map((id) => bg.assign.get(id).groupId), [sub.id, sub.id, sub.id]);
+  assert.deepEqual([4, 5, 6, 7, 100].map((id) => bg.assign.get(id).groupId), Array(5).fill(parent));
+  assert.deepEqual(Object.values(bg.state.groups).map((g) => g.name).sort(), ['Kyoto in spring', 'Places to stay', 'pinned.example']);
+  const [entry] = bg.state.log;
+  assert.equal(entry.split, 'Kyoto in spring');
+  assert.equal(entry.considered, 8);
+  assert.deepEqual(entry.tabs.map((t) => [t.group, t.created]), Array(3).fill(['Kyoto in spring / Places to stay', true]));
+  assert.equal(entry.usage.input, 400);
+
+  // Five left directly in it: not asked again until four more have arrived.
+  for (const n of [9, 10, 11]) await browser.tabs.create({ url: `https://site${n}.example/see` });
+  await tick();
+  await bg.runClassify();
+  assert.equal(asked.length, 1);
+  await browser.tabs.create({ url: 'https://site12.example/see' });
+  await tick();
+  await bg.runClassify();
+  assert.equal(asked.length, 2);
+  assert.deepEqual(asked[1].subgroups.map((g) => g.name), ['Places to stay']);
+});
+
+test('re-sorting everything leaves tabs above the line where they are', async () => {
+  const { bg } = await boot([{ id: 1, url: 'https://a.com/' }, { id: 2, url: 'https://b.com/' }]);
+  const a = bg.assign.get(1).groupId;
+  await bg.handle({ type: 'renameGroup', groupId: a, name: 'Keep' });
+  await bg.handle({ type: 'pinGroup', groupId: a });
+  await bg.handle({ type: 'resort' });
+  assert.equal(groupOf(bg, 1).name, 'Keep');
+  assert.equal(groupOf(bg, 2).name, 'b.com');
 });
 
 test('a site group the user renamed is shown to the AI; an untouched one is not', async () => {

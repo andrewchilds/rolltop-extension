@@ -220,17 +220,25 @@ function logEntry(e, open) {
     );
   });
   const shown = node('details', '',
-    node('summary', '', `Groups the model was shown (${e.groups.length})`),
+    node('summary', '', `${e.split ? 'Sub-groups' : 'Groups'} the model was shown (${e.groups.length})`),
     node('ul', '', ...e.groups.map((g) => node('li', '',
       `${g.name} · ${g.label}`,
       node('span', 'sub', g.titles.length ? g.titles.join(' | ') : 'No tab titles'),
     ))),
   );
+  const count = e.split
+    ? `split "${e.split}": ${e.tabs.length} of ${e.considered} moved`
+    : `${e.tabs.length} ${e.tabs.length === 1 ? 'tab' : 'tabs'}`;
+  const u = e.usage;
+  const cost = u ? [
+    `${u.input.toLocaleString()} tokens in, ${u.output.toLocaleString()} out`,
+    `${(u.ms / 1000).toFixed(1)} s`,
+    u.model && u.model !== e.model ? `answered by ${u.model}` : '',
+  ].filter(Boolean).join(' · ') : '';
   const details = node('details', '',
-    node('summary', '', [
-      new Date(e.at).toLocaleString(), e.workspace, `${e.tabs.length} ${e.tabs.length === 1 ? 'tab' : 'tabs'}`, how,
-    ].filter(Boolean).join(' · ')),
+    node('summary', '', [new Date(e.at).toLocaleString(), e.workspace, count, how].filter(Boolean).join(' · ')),
     e.error ? node('p', 'err', e.error) : null,
+    cost ? node('p', 'sub', cost) : null,
     node('ul', '', ...tabs),
     ...e.renames.map((r) => node('p', 'sub', `Renamed group "${r.from}" to "${r.to}"`)),
     e.model ? shown : null,

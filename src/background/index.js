@@ -1,8 +1,8 @@
 import { createBackground } from './core.js';
-import { classifyWithAI } from './classify-ai.js';
+import { classifyWithAI, splitWithAI } from './classify-ai.js';
 import { MENU } from '../../extension/lib/model.js';
 
-const background = createBackground({ browser, classifyWithAI });
+const background = createBackground({ browser, classifyWithAI, splitWithAI });
 background.start().catch((e) => console.error('Rolltop failed to start', e));
 
 browser.browserAction.onClicked.addListener(() => browser.sidebarAction.toggle());

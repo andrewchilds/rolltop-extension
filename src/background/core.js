@@ -4,7 +4,7 @@
 // The browser API and the AI classifier are injected so this runs under Node.
 
 import {
-  DAY, MENU, canNest, chain, childMap, slotOf, subtree, pathName, isHardPinned, matchesQuery,
+  DAY, MAX_DEPTH, MENU, canNest, chain, childMap, slotOf, subtree, pathName, isHardPinned, matchesQuery,
 } from '../../extension/lib/model.js';
 import { applyPlan, clean, gcGroups, heuristicPlan } from '../../extension/lib/plan.js';
 import { FORMAT, VERSION, mergeGroups, readWorkspace } from '../../extension/lib/workspace.js';
@@ -20,6 +20,11 @@ const SEARCH_LIMIT = 50;
 const LOG_CAP = 20; // sorting runs kept for the options page
 // Archived groups older than this stay searchable but are not shown to the AI.
 const AI_RECENT = 30 * DAY;
+// A group with this many tabs sitting directly in it is offered to the AI to
+// split into sub-groups, and again each time it has grown by SPLIT_STEP since.
+const SPLIT_AT = 8;
+const SPLIT_STEP = 4;
+const AI_RETRY_MAX = 15 * 60_000;
 const UID_KEY = 'uid'; // session value on a tab: the uid of its record
 const WS_KEY = 'ws'; // session value on a window: the workspace it shows
 // Version 1 kept a tab's group, name and favorites row in these session values.
@@ -48,18 +53,24 @@ const messageOf = (e) => (e && e.message) || String(e);
 export function createBackground({
   browser,
   classifyWithAI,
+  splitWithAI,
   now = () => Date.now(),
   delay = {},
   // (prefix) -> a new id: 'w' workspace, 'g' group, 't' tab record, 'a' archive record.
   newId = randomId,
 }) {
-  const wait = { classify: 1200, push: 50, save: 400, retry: 5000, ...delay };
+  const wait = { classify: 1200, push: 50, save: 400, retry: 5000, aiRetry: 60_000, ...delay };
   const doc = { meta: { version: 2, order: [], current: null }, spaces: {}, archives: {}, log: [] };
   let settings = { ...DEFAULTS };
   const byTab = new Map(); // tabId -> { ws, rec }: the open tab's workspace id and record
   const open = new Map(); // record uid -> tabId
   const active = new Map(); // windowId -> the workspace it shows
   const queue = new Set(); // tabIds waiting for a classifier run
+  // tabIds filed by site that are owed a sort by the AI: its call failed, or
+  // the tab was a favorite until now.
+  const missed = new Set();
+  let aiRetry = null;
+  let aiFails = 0; // failures in a row that are worth retrying
   const archiving = new Set(); // tabIds being closed by archiveTabs
   const ports = new Set();
   const status = { sorting: false, error: '', saveError: '' };
@@ -579,12 +590,41 @@ export function createBackground({
     scheduleClassify();
   }
 
+  // Whether a classifier run should place this tab.
+  function unsorted(tab) {
+    const e = byTab.get(tab.id);
+    if (!e || !isSortable(tab)) return false;
+    if (!isFiled(tab)) return true;
+    // Filed by site but owed a sort by the AI; it waits for the retry.
+    return missed.has(tab.id) && !e.rec.manual && !isHardPinned(space(e.ws).groups, e.rec.groupId);
+  }
+
+  function retryMissed() {
+    for (const id of [...missed]) {
+      if (byTab.has(id)) queue.add(id);
+      else missed.delete(id);
+    }
+    if (queue.size) runClassify();
+  }
+
+  // Waits longer after each failure in a row, up to AI_RETRY_MAX.
+  function scheduleRetry() {
+    if (aiRetry) return;
+    aiRetry = setTimeout(() => {
+      aiRetry = null;
+      retryMissed();
+    }, Math.min(wait.aiRetry * 2 ** Math.max(0, aiFails - 1), AI_RETRY_MAX));
+    aiRetry.unref?.();
+  }
+
   // What the AI sees of a workspace's tree: groups with open tabs, groups
   // archived recently, and their ancestors. Older archived groups are left out
   // so request size tracks what is in use, not the size of the archive. Site
   // groups from the fallback are left out so it builds topic groups instead,
   // unless the user renamed one: that makes it a group they mean to keep.
   // Groups above the line are left out: the classifier has no say there.
+  // Favorites are left out too, open or archived: they sit in their own grid,
+  // are not part of what is being browsed, and are only ever filed by site.
   function contextFor(home) {
     const groups = home.groups;
     const titles = new Map();
@@ -596,10 +636,12 @@ export function createBackground({
       if (!titles.has(gid)) titles.set(gid, []);
       if (titles.get(gid).length < 6) titles.get(gid).push(title);
     };
-    home.tabs.forEach((rec) => add(rec.groupId, rec.title));
+    home.tabs.forEach((rec) => {
+      if (!rec.favorite) add(rec.groupId, rec.title);
+    });
     const cutoff = now() - AI_RECENT;
     archiveOf(home.id).forEach((a) => {
-      if (a.at >= cutoff) add(a.groupId, a.title);
+      if (a.at >= cutoff && !a.favorite) add(a.groupId, a.title);
     });
     const hidden = (g) => !!g.site && !g.manual;
     return Object.values(groups)
@@ -642,19 +684,24 @@ export function createBackground({
       ids.forEach((id) => queue.delete(id));
       const all = await browser.tabs.query({});
       const inWs = (t) => byTab.get(t.id)?.ws === wsId;
-      const batch = all.filter((t) => ids.includes(t.id) && inWs(t) && isSortable(t) && !isFiled(t));
+      const batch = all.filter((t) => ids.includes(t.id) && inWs(t) && unsorted(t));
       if (!batch.length || !space(wsId)) continue;
       status.sorting = true;
       push();
 
-      const useAI = !!(settings.apiKey && classifyWithAI);
+      // Favorites are never sent; the site fallback below files them.
+      const sendable = batch.filter((t) => !byTab.get(t.id).rec.favorite);
+      const useAI = !!(settings.apiKey && classifyWithAI && sendable.length);
       const model = settings.model || DEFAULTS.model;
       const context = useAI ? contextFor(space(wsId)) : [];
       const nameOf = (gid) => {
         const groups = space(wsId)?.groups || {};
         return groups[gid] ? pathName(groups, gid) : '';
       };
-      const fromOf = (t) => (inWs({ id: t.openerTabId }) ? groupIdOfTab(t.openerTabId) : null);
+      const fromOf = (t) => {
+        const from = byTab.get(t.openerTabId);
+        return from && from.ws === wsId && !from.rec.favorite ? groupIdOfTab(t.openerTabId) : null;
+      };
       // One log entry per run: what the classifier was shown and what it did.
       const before = new Map(Object.values(space(wsId).groups).map((g) => [g.id, g.name]));
       const entry = {
@@ -672,13 +719,15 @@ export function createBackground({
       };
 
       let plan = null;
+      let failed = false;
+      let retry = false;
       if (useAI) {
         try {
           plan = await classifyWithAI({
             apiKey: settings.apiKey,
             model,
             groups: context,
-            tabs: batch.map((t) => {
+            tabs: sendable.map((t) => {
               const from = fromOf(t);
               return {
                 id: t.id,
@@ -689,9 +738,13 @@ export function createBackground({
             }),
           });
           status.error = '';
+          aiFails = 0;
+          if (plan.usage) entry.usage = plan.usage;
         } catch (e) {
           status.error = messageOf(e);
           entry.error = status.error;
+          failed = true;
+          retry = !!(e && e.retry);
         }
       }
 
@@ -704,6 +757,17 @@ export function createBackground({
       // Anything the AI skipped, or everything when it is off or failed.
       const rest = batch.filter((t) => liveIds.has(t.id) && !done.has(t.id));
       const bySite = rest.length ? apply(home, heuristicPlan(rest, home.groups), rest, liveIds) : new Set();
+      if (!failed) {
+        batch.forEach((t) => missed.delete(t.id));
+      } else {
+        // Sorted by site so they are not left loose, and remembered: the AI
+        // gets them again when the retry fires or the settings change.
+        sendable.forEach((t) => { if (bySite.has(t.id)) missed.add(t.id); });
+        if (retry) {
+          aiFails += 1;
+          scheduleRetry();
+        }
+      }
 
       const reasons = new Map(((plan && plan.assignments) || []).map((a) => [a.tabId, a.reason || '']));
       batch.forEach((t, i) => {
@@ -720,6 +784,100 @@ export function createBackground({
         const g = home.groups[id];
         if (g && g.name !== name) entry.renames.push({ from: name, to: g.name });
       });
+      doc.log = [entry, ...doc.log].slice(0, LOG_CAP);
+
+      if (plan && splitWithAI) {
+        const touched = new Set([...done].map(groupIdOfTab).filter(Boolean));
+        await splitLarge(wsId, touched, model);
+      }
+    }
+  }
+
+  // The open tabs sitting directly in a group that the classifier may move.
+  const looseIn = (home, groupId) => home.tabs.filter(
+    (r) => r.groupId === groupId && !r.manual && !r.favorite && open.has(r.uid),
+  );
+
+  // A group that has collected many tabs is shown to the AI on its own, to
+  // move those that form sub-topics into sub-groups. `splitAt` on the group is
+  // how many tabs it was left with at the last look, so it is not asked about
+  // again until it has grown.
+  async function splitLarge(wsId, groupIds, model) {
+    for (const gid of groupIds) {
+      const home = space(wsId);
+      const g = home && home.groups[gid];
+      if (!g || (g.site && !g.manual) || isHardPinned(home.groups, gid)) continue;
+      if (chain(home.groups, gid).length >= MAX_DEPTH) continue;
+      const recs = looseIn(home, gid);
+      if (recs.length < Math.max(SPLIT_AT, (g.splitAt || 0) + SPLIT_STEP)) continue;
+
+      const tabs = recs.map((r) => ({ id: open.get(r.uid), title: r.title || '', url: r.url }));
+      const subgroups = Object.values(home.groups)
+        .filter((x) => x.parentId === gid)
+        .map((x) => ({
+          id: x.id,
+          name: x.name,
+          label: x.label,
+          titles: home.tabs.filter((r) => r.groupId === x.id && !r.favorite).slice(0, 6).map((r) => r.title || ''),
+        }));
+      const entry = {
+        at: now(),
+        workspace: home.name,
+        model,
+        error: '',
+        split: pathName(home.groups, gid),
+        considered: tabs.length,
+        groups: subgroups.map((x) => ({ name: x.name, label: x.label, titles: x.titles })),
+        tabs: [],
+        renames: [],
+      };
+
+      let plan = null;
+      try {
+        plan = await splitWithAI({
+          apiKey: settings.apiKey,
+          model,
+          group: { id: g.id, name: g.name, label: g.label },
+          subgroups,
+          tabs,
+        });
+        if (plan.usage) entry.usage = plan.usage;
+      } catch (e) {
+        entry.error = messageOf(e);
+      }
+
+      // The group, or any of its tabs, may have gone or been moved meanwhile.
+      const after = space(wsId);
+      if (plan && after && after.groups[gid]) {
+        const still = (id) => {
+          const e = byTab.get(id);
+          return !!e && e.ws === wsId && e.rec.groupId === gid && !e.rec.manual && !e.rec.favorite;
+        };
+        const before = new Set(Object.keys(after.groups));
+        const res = applyPlan(after.groups, after.counters, plan, new Set(tabs.map((t) => t.id).filter(still)), makeGroupId);
+        after.groups = res.groups;
+        after.counters = res.counters;
+        const moves = tabs
+          .map((t) => ({ t, to: res.assign[t.id] }))
+          .filter((m) => m.to && res.groups[m.to].parentId === gid);
+        const size = new Map();
+        moves.forEach((m) => size.set(m.to, (size.get(m.to) || 0) + 1));
+        for (const { t, to } of moves) {
+          // A sub-group made for one tab is no easier to read than no sub-group.
+          if (!before.has(to) && size.get(to) < 2) continue;
+          file(t.id, to, byTab.get(t.id).rec.host);
+          entry.tabs.push({
+            title: t.title,
+            url: logUrl(t.url),
+            openedFrom: '',
+            by: 'ai',
+            group: pathName(after.groups, to),
+            created: !before.has(to),
+            reason: '',
+          });
+        }
+        after.groups[gid].splitAt = looseIn(after, gid).length;
+      }
       doc.log = [entry, ...doc.log].slice(0, LOG_CAP);
     }
   }
@@ -743,8 +901,13 @@ export function createBackground({
     tabs.filter(isSortable).forEach((t) => {
       const e = byTab.get(t.id);
       if (!e || e.rec.manual) return;
+      // Above the line a tab stays where it is.
+      if (e.rec.groupId && isHardPinned(space(e.ws).groups, e.rec.groupId)) return;
       unfile(e.rec);
       queue.add(t.id);
+    });
+    Object.values(doc.spaces).forEach((s) => {
+      Object.values(s.groups).forEach((g) => { delete g.splitAt; });
     });
     await runClassify();
     // Tabs queued while that run was finishing.
@@ -1415,11 +1578,18 @@ export function createBackground({
         if (sync(e.rec, tab)) save();
       }
       if (change.url || change.status === 'complete' || change.title) consider(tab);
+      // Unpinned, a favorite is an ordinary tab again: the AI gets to file it.
+      if ('pinned' in change && e && !e.rec.favorite && settings.apiKey && groupIdOfTab(tabId)) {
+        missed.add(tabId);
+        queue.add(tabId);
+        scheduleClassify();
+      }
       push();
     });
     browser.tabs.onRemoved.addListener((tabId) => {
       const e = unbind(tabId);
       queue.delete(tabId);
+      missed.delete(tabId);
       if (e) {
         space(e.ws).tabs = space(e.ws).tabs.filter((r) => r !== e.rec);
         // Closed by the browser rather than from the sidebar: archived all the same.
@@ -1460,6 +1630,7 @@ export function createBackground({
         stamp(added, e.rec.uid);
       }
       if (queue.delete(removed)) queue.add(added);
+      if (missed.delete(removed)) missed.add(added);
       push();
     });
 
@@ -1499,8 +1670,11 @@ export function createBackground({
 
     browser.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || !changes.settings) return;
+      const was = settings;
       settings = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
       push();
+      // A new key or model may be the fix for what failed before.
+      if (settings.apiKey && (settings.apiKey !== was.apiKey || settings.model !== was.model)) retryMissed();
       // Auto-tidy may have just been switched on, or its age shortened.
       tidy().catch(reportError);
     });
