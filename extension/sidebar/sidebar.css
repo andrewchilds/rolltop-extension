@@ -114,8 +114,9 @@ nav {
   background: transparent;
   font: inherit;
   color: var(--fg);
-  outline-offset: 4px;
+  outline: none;
 }
+.search:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .search input::placeholder { color: var(--muted); opacity: 1; }
 
 .browse {
